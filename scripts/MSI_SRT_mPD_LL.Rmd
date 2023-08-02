@@ -1,0 +1,1105 @@
+---
+title: "MSI-SRT"
+author: "Ludvig Larsson"
+date: '2022-06-16'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries
+
+```{r message=FALSE, warning=FALSE}
+library(STutility)
+library(ggplot2)
+library(magrittr)
+library(dplyr)
+library(dbscan)
+```
+
+
+Assemble spaceranger output files and MSI output files
+
+# Create directories and system variables
+These directories should have already been created if you already ran the main.Rmd script. Run the following chunk of code in case you didn't. Modify the project.dir and working.dir paths depending on the folder where you are located when running this script. You can check the location where you are using running getwd() directly in the console and modify it using setwd() function. When writing this script we are working in the /sma/scripts folder (our working.dir), and we counsidered sma our project.dir.
+```{r message=FALSE, warning=FALSE}
+
+project.dir <- ".."
+data.dir <- paste0(project.dir, "/data")
+working.dir <- "."
+dir.create(paste0(working.dir, "/R_objects"))
+dir.create(paste0(working.dir, "/results"))
+dir.create(paste0(working.dir, "/results/tables"))
+dir.create(paste0(working.dir, "/results/plots"))
+
+```
+
+Assemble spaceranger output files and msi csv files.
+
+```{r}
+
+# spaceranger output files
+samples <- list.files(path = data.dir, pattern = "filtered_feature_bc_matrix.h5", recursive = TRUE, full.names = TRUE)
+imgs <- list.files(path = data.dir, pattern = "tissue_hires_image.png", recursive = TRUE, full.names = TRUE)
+spotfiles <- list.files(path = data.dir, pattern = "tissue_positions_list.csv", recursive = TRUE, full.names = TRUE)
+json <- list.files(path = data.dir, pattern = "scalefactors_json.json", recursive = TRUE, full.names = TRUE)
+metrics <- list.files(path = data.dir, pattern = "metrics_summary.csv", recursive = TRUE, full.names = TRUE)
+
+# Collect sample IDs from file names for Visium datasets
+sampleids <- do.call(rbind, strsplit(samples, "/"))
+sampleids <- sampleids[, ncol(sampleids) - 4]
+
+# Create infoTable for STUtility
+infoTable <- data.frame(samples, imgs, spotfiles, json, sample_id = sampleids)
+
+# MSI data files
+msi_files <- list.files(path = data.dir, pattern = "_smamsi.csv", recursive = TRUE, full.names = TRUE)
+
+# Collect sample IDs from file names for MSI datasets
+sampleids_msi <- do.call(rbind, strsplit(msi_files, "/"))
+sampleids_msi <- sampleids_msi[, ncol(sampleids_msi) - 3]
+
+# Add ample IDS as names to msi files
+msi_files <- setNames(msi_files, nm = sampleids_msi)
+
+```
+
+There is another issue that remains and that is how to align the MSI data with the Visium data for the human brain samples. Even though the strategy that we used is the same, we aligned this data in another script (MSI_SRT_hPDStr_LLMV.Rmd). Please refer to this script to see the parameters that we used for the alignment of the human data. For this script we will remove the human samples (V11T17-102 slide)
+
+```{r}
+
+msi_files <- msi_files[-grep(pattern = "V11T17-102", x = names(msi_files))]
+
+```
+
+We'll only keep sample ids with paired Visium and MSI data. 
+
+```{r}
+
+# Samples to keep
+samples_keep <- intersect(sampleids, names(msi_files))
+
+# Filter infoTable
+infoTable_filtered <- subset(infoTable, sample_id %in% samples_keep)
+
+# Filter msi files
+msi_files_filtered <- msi_files[samples_keep]
+
+```
+
+## Load MSI data
+
+Here we also name the list based on sample IDS so that it's 
+easier to pair it the Visium data with the MSI data later on. 
+This step should take no more than a minute to run.
+
+```{r}
+
+# Create mepty lists
+msiList <- list()
+coordList <- list()
+
+# Fill lists with coordinates and count matrices
+for (nm in  names(msi_files_filtered)) {
+  f <- msi_files_filtered[nm]
+  msiData <- data.table::fread(input = f, sep = ",")
+  xy <- as.data.frame(msiData[, 1:2]) # Extract coordinates
+  msiData <- msiData[, 3:ncol(msiData)] # Remove coordinates from msiData
+  msiData <- t(msiData) # Transpose data
+  colnames(msiData) <- paste0(xy$x, "x", xy$y) # Set x,y coords as rownames
+  rownames(xy) <- paste0(xy$x, "x", xy$y)
+  msiList <- c(msiList, setNames(list(msiData), nm = nm))
+  coordList <- c(coordList, setNames(list(xy), nm = nm))
+}
+
+```
+
+Each element in `msiList` contains an MSI matrix and each element in 
+`coordList` contains a `data.frame` with x, y coordinates.
+
+```{r}
+
+msiList[[1]][1:5, 1:5]
+head(coordList[[1]])
+
+```
+
+Check that lists match
+
+```{r}
+
+# Check that names match
+sprintf("Do all element names of the lists match? %s", all(names(msiList) == names(coordList)))
+
+```
+
+## Create RNA Seurat object
+***
+
+Here we'll create a Seurat object for each Visium dataset. It'll take 
+a couple of minutes to load all datasets.
+
+```{r eval=FALSE}
+
+# Load Visium data
+se.RNA.list <- setNames(lapply(1:nrow(infoTable_filtered), function(i) {
+  se <- InputFromTable(infoTable_filtered[i, ])
+  return(se)
+}), nm = infoTable_filtered$sample_id)
+
+```
+
+The default image size for an H&E image (tissue_hires_image.png) is roughly 2000x2000 pixels. 
+So in order to make use of STUtility's alignment function we need to adjust the MSI coordinates
+to be similar. To achieve this, I decided to multiply the MSI grid coordinates by a factor of 25.
+We will see later what effect this transformation has.
+
+
+```{r}
+
+sf <- 20
+
+coordList <- lapply(coordList, function(coords) {
+  coords <- cbind(coords, setNames(coords*sf, nm = c("pixel_x", "pixel_y")))
+  return(coords)
+})
+
+```
+
+Now let's have a look at the coordinates for Visium and MSI in the same plot 
+and color these by the number of unique features:
+
+```{r fig.width=10, fig.height=20}
+
+plots <- lapply(names(se.RNA.list), function(nm) {
+  
+  se.RNA <- se.RNA.list[[nm]]
+  coords <- coordList[[unique(se.RNA$sample_id)]]
+  msiMat <- msiList[[unique(se.RNA$sample_id)]]
+  gg <- rbind(cbind(GetStaffli(se.RNA)@meta.data[, c("pixel_x", "pixel_y")], 
+                    type = "RNA", unique_features = se.RNA$nFeature_RNA),
+           cbind(coordList[[unique(se.RNA$sample_id)]][, c("pixel_x", "pixel_y")], 
+                 type = "MSI", unique_features = colSums(msiMat > 0)))
+
+  plots <- lapply(c("RNA", "MSI"), function(i) {
+    inner_p <- ggplot(subset(gg, type == i), aes(pixel_x, pixel_y, color = unique_features)) +
+      geom_point() +
+      scale_color_gradientn(colours = viridis::viridis(n = 11)) +
+      theme_void() +
+      theme(legend.position = "top", legend.text = element_text(angle = 60, hjust = 1)) +
+      labs(title = paste0(nm, ": ", i))
+    return(inner_p)
+  })
+  
+  p <- patchwork::wrap_plots(plots, ncol = 2)
+  
+  return(p)
+  
+})
+
+patchwork::wrap_plots(plots, ncol = 2)
+
+```
+
+We can also visualize this as violin plots:
+
+```{r fig.height=7, fig.width=10}
+
+gg <- do.call(rbind, lapply(names(se.RNA.list), function(nm) {
+  se.RNA <- se.RNA.list[[nm]]
+  coords <- coordList[[unique(se.RNA$sample_id)]]
+  msiMat <- msiList[[unique(se.RNA$sample_id)]]
+  gg <- rbind(cbind(GetStaffli(se.RNA)@meta.data[, c("pixel_x", "pixel_y")], 
+                    type = "RNA", unique_features = se.RNA$nFeature_RNA),
+           cbind(coordList[[unique(se.RNA$sample_id)]][, c("pixel_x", "pixel_y")], 
+                 type = "MSI", unique_features = colSums(msiMat > 0)))
+  gg$sample_id <- nm
+  return(gg)
+}))
+
+p1 <- ggplot(subset(gg, type == "MSI"), aes(sample_id, unique_features, fill = sample_id)) +
+  geom_violin(scale = "width") +
+  geom_hline(yintercept = 200, linetype = "dashed", color = "red") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+p2 <- ggplot(subset(gg, type == "RNA"), aes(sample_id, unique_features, fill = sample_id)) +
+  geom_violin(scale = "width") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+patchwork::wrap_plots(p1, p2, ncol = 1) &
+  theme(legend.position = "none")
+
+```
+
+## Create Seurat objects for MSI data
+***
+
+Now we can create a `Staffli` object and a `Seurat` object for each dataset to and combine the two to make a `Seurat` object compatible with STUtility. 
+
+```{r}
+
+# Create Seurat objects for MSI data
+se.MSI.list <- setNames(lapply(names(se.RNA.list), function(nm) {
+  coords <- coordList[[nm]]
+  xy_lims <- sapply(coords[, 1:2], max)
+  # Create a Staffli object and set sample to 1 since we only have 1 tissue section
+  st.object <- CreateStaffliObject(meta.data = cbind(coords, sample = "1"))
+  # Do limits vary between experiments?
+  st.object@limits[["1"]] <- xy_lims
+  # Create Seurat object
+  se.MSI <- CreateSeuratObject(counts = msiList[[nm]], assay = "MSI")
+  se.MSI@tools$Staffli <- st.object
+  return(se.MSI)
+}), nm = names(se.RNA.list))
+
+```
+
+It looks like the MSI section has some data outside of the tissue. We will get rid of it using a strategy that involves looking at the first components of the PCA.
+
+```{r fig.width=10, fig.height=5}
+
+(ST.FeaturePlot(se.RNA.list[[1]], features = "nFeature_RNA", palette = "viridis", pt.size = 2) | 
+  ST.FeaturePlot(se.MSI.list[[1]], features = "nCount_MSI", palette = "viridis", pt.size = 2)) & theme(strip.text = element_blank())
+
+```
+
+```{r include=FALSE}
+
+# Only used to speed up knitting process
+se.MSI.list <- readRDS("../R_objects/se.MSI.list")
+
+```
+
+Let's subset the MSI data to have more than 250 features per pixel.
+
+Then we run a few simple steps to process the data:
+
+1. normalization 
+2. scaling
+3. detect top variable features
+4. PCA
+
+```{r eval=FALSE}
+
+se.MSI.list <- lapply(se.MSI.list, function(se.MSI) {
+  se.MSI <- SubsetSTData(se.MSI, expression = nFeature_MSI > 250)
+  se.MSI <- se.MSI |> 
+    NormalizeData(verbose = FALSE) |>
+    ScaleData(verbose = FALSE) |>
+    FindVariableFeatures(verbose = FALSE) |>
+    RunPCA(verbose = FALSE)
+  return(se.MSI)
+})
+
+```
+
+If we look at the PCA, it seems as if the first components drives a separation 
+between tissue and non-tissue. It makes sense that PC1 also shows up in the 
+ventricles which should be empty of cells. 
+
+```{r fig.width=9, fig.height=12}
+
+selected.compontents <- setNames(c(1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1), nm = names(se.MSI.list))
+
+plots <- lapply(names(se.MSI.list), function(nm) {
+  se.MSI <- se.MSI.list[[nm]]
+  ST.DimPlot(se.MSI, dims = selected.compontents[nm], reduction = "pca", ncol = 2, 
+             cols = RColorBrewer::brewer.pal(n = 11, name = "RdBu") |> rev())
+})
+
+patchwork::wrap_plots(plots, ncol = 3)
+
+```
+
+Based on these selected components, I think we can filter our MSI dataset 
+further to get a better outline of the tissue. 
+
+All thresholds were selected by visual inspection of the spatial plots above. 
+
+```{r}
+
+# The integer determines the PC and the sign
+# determines the direction that the edge effect is in
+selected.pcs.threshold <- setNames(c(40, 40, -25, 20, 20, 20, -40, 40, 40, 40, -40, -40), nm = names(se.MSI.list))
+
+gg <- do.call(rbind, lapply(names(se.MSI.list), function(nm) {
+  se.MSI <- se.MSI.list[[nm]]
+  npc <- selected.compontents[nm]
+  dir <- sign(selected.pcs.threshold[nm])
+  thr <- selected.pcs.threshold[nm]
+  if (dir > 0) {
+    df <- data.frame(value = se.MSI@reductions$pca@cell.embeddings[, npc], sample_id = nm) |>
+      mutate(tissue = ifelse(value > thr, "background", "tissue"))
+  } else {
+    df <- data.frame(value = se.MSI@reductions$pca@cell.embeddings[, npc], sample_id = nm) |>
+      mutate(tissue = ifelse(value < thr, "background", "tissue"))
+  }
+  return(df)
+}))
+
+ggplot(gg, aes(sample_id, value, color = tissue)) +
+  geom_jitter(size = 0.5) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+```
+
+And let's look at the labels in in 2D space:
+
+```{r  fig.width=12, fig.height=12}
+
+se.MSI.list <- setNames(lapply(names(se.MSI.list), function(nm) {
+  se.MSI <- se.MSI.list[[nm]]
+  npc <- selected.compontents[nm]
+  dir <- sign(selected.pcs.threshold[nm])
+  thr <- selected.pcs.threshold[nm]
+  values <- se.MSI@reductions$pca@cell.embeddings[, npc]
+  if (dir > 0) {
+    se.MSI$tissue <- ifelse(values > thr, "background", "tissue")
+  } else {
+    se.MSI$tissue <- ifelse(values < thr, "background", "tissue")
+  }
+  return(se.MSI)
+}), nm = names(se.MSI.list))
+
+plots <- lapply(names(se.MSI.list), function(nm) {
+  se.MSI <- se.MSI.list[[nm]]
+  ST.FeaturePlot(se.MSI, features = "tissue", cols = c("background" = "black", "tissue" = "mistyrose")) &
+    labs(title = nm) &
+    theme(strip.text = element_blank())
+})
+
+patchwork::wrap_plots(plots, ncol = 3)
+
+```
+
+### Filter data based on PCA
+***
+
+Looks like our filters captured the edges quite well so now we can remove 
+the background from our Seurat objects.
+
+```{r}
+
+se.MSI.list <- setNames(lapply(se.MSI.list, function(se.MSI) {
+  se.MSI <- SubsetSTData(se.MSI, expression = tissue == "tissue")
+  return(se.MSI)
+}), nm = names(se.MSI.list))
+
+```
+
+
+## Align MSI data to SRT data
+***
+
+Unfortunately, `STUtility` is designed to work with image data so we cannot use 
+the `Align*` functions directly on this object. To circumvent this issue, we could 
+put in some "dummy" images into the `Staffli` object. To achieve this, we need to 
+add a couple of things to our object.
+
+First, let's load the H%E images for the Visium data.
+
+```{r eval=FALSE}
+
+se.RNA.list <- lapply(se.RNA.list, function(se.RNA) {
+  se.RNA <- LoadImages(se.RNA, xdim = 400, time.resolve = FALSE)
+  se.RNA <- se.RNA |> MaskImages(channels.use = 3)
+  se.RNA <- SwitchResolution(se.RNA, xdim = 1000, verbose = TRUE)
+  return(se.RNA)
+})
+
+```
+
+Now the H&E images should be masked which is required to run 
+manual image alignment later on. Let's have a look at the masked 
+H&E images:
+
+```{r fig.width=5, fig.height=5}
+
+for (i in seq_along(se.RNA.list)) {
+  GetStaffli(se.RNA.list[[i]])@rasterlists$masked[[1]] |> 
+    magick::image_read() |>
+    magick::image_scale(geometry = "400") |>
+    as.raster() |>
+    plot()
+}
+
+```
+
+
+```{r fig.width=8, fig.height=10}
+
+plots <- lapply(names(se.MSI.list), function(nm) {
+  se.MSI <- se.MSI.list[[nm]]
+  p <- ST.FeaturePlot(se.MSI, features = "nFeature_MSI", label.by = ) &
+    theme(legend.position = "top", strip.text = element_blank()) &
+    labs(title = nm)
+  return(p)
+})
+
+patchwork::wrap_plots(plots, ncol = 3)
+
+```
+
+Now if we move to the MSI data instead, we need to add a few things to the
+object to make it work in STUtility. 
+
+```{r eval=FALSE}
+
+se.MSI.withIMG.list <- setNames(lapply(names(se.MSI.list), function(nm) {
+  
+  # Make sure that image masks are removed
+  se.MSI <- se.MSI.list[[nm]]
+  se.RNA <- se.RNA.list[[nm]]
+  st_rna_object <- GetStaffli(se.RNA)
+  dim_row <- (st_rna_object@rasterlists$raw$`1` |> dim())[1]
+  dim_col <- (st_rna_object@rasterlists$raw$`1` |> dim())[2]
+  se.MSI@tools$Staffli@rasterlists$masked <- NULL
+  se.MSI@tools$Staffli@rasterlists$masked.masks <- NULL
+  
+  # plot MSI coordinates to create a "tissue" image
+  tmpfile <- tempfile()
+  png(filename = paste0(tmpfile, ".png"), height = dim_row, width = dim_col)
+  par(mar = c(0, 0, 0, 0))
+  #p <- ST.FeaturePlot(se.MSI.filtered, features = "orig.ident", pt.size = 20, cols = "black") &
+  #  theme(plot.title = element_blank(), plot.subtitle = element_blank(), legend.position = "none") 
+  p <- cbind(se.MSI[[]], GetStaffli(se.MSI)@meta.data) |>
+    mutate(pixel_x = pixel_x*0.5, pixel_y = pixel_y*0.5) |>
+    ggplot(aes(pixel_x, dim_row - pixel_y)) +
+    geom_point(size = 10) +
+    scale_x_continuous(limits = c(0, dim_col), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0, dim_row), expand = c(0, 0)) +
+    theme_void()
+  print(p)
+  dev.off()
+  
+  # read "tissue" image
+  im <- magick::image_read(path = paste0(tmpfile, ".png"))
+  iminfo <- magick::image_info(im)
+  im <- as.raster(im)
+  
+  # Now we can place the "tissue" image in our Staffli object
+  # and we are ready to run manual image alignment
+  se.MSI@tools$Staffli@rasterlists[["raw"]] <- list("1" = im)
+  se.MSI@tools$Staffli@rasterlists[["masked"]] <- list("1" = im)
+  se.MSI@tools$Staffli@rasterlists[["masked.masks"]] <- list("1" = as.raster(ifelse(im == "#ffffffff", "#00000000", "#ffffffff")))
+  se.MSI@tools$Staffli@meta.data <- se.MSI@tools$Staffli@meta.data |> 
+    mutate(pixel_x = pixel_x*0.5, pixel_y = pixel_y*0.5)
+  se.MSI@tools$Staffli@xdim <- dim_col
+  se.MSI@tools$Staffli@dims <- list("1" = iminfo)
+  
+  return(se.MSI)
+  
+}), nm = names(se.MSI.list))
+
+```
+
+As a sanity check, we can plot the MSI coordinates on our new "tissue" image
+to see if they align:
+
+```{r fig.width=12, fig.height=12}
+
+plots <- lapply(names(se.MSI.list), function(nm) {
+  FeatureOverlay(se.MSI.withIMG.list[[nm]], features = "nFeature_MSI", show.sb = FALSE, pt.size = 1)
+})
+
+patchwork::wrap_plots(plots, ncol = 3)
+  
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+saveRDS(se.MSI.withIMG.filtered, file = "../R_objects/se.MSI.withIMG.list")
+
+```
+
+Now we can merge the two objects `se.RNA` and `se.MSI.filtered` into one single
+Seurat object. To do this, we use the `MergeSTData` function
+
+```{r eval=FALSE}
+
+se.merged.list <- lapply(names(se.MSI.withIMG.list), function(nm) {
+  se.merged <- MergeSTData(se.RNA.list[[nm]], se.MSI.withIMG.list[[nm]])
+  return(se.merged)
+})
+
+```
+
+Let's check how that went :-/
+
+Looks like the two coordinate systems are fairly close to each other now.
+
+```{r include=FALSE}
+se.merged.list <- readRDS("../R_objects/se.merged.list")
+```
+
+Let's plot our paired RNA and MSI data points in a spatial map.
+
+```{r fig.width=14, fig.height=14}
+
+plots <- lapply(se.merged.list, function(se.merged) {
+  se.merged$type <- ifelse(is.na(se.merged$nCount_MSI), "RNA", "MSI")
+  p <- ST.FeaturePlot(se.merged, features = "orig.ident", ncol = 2, cols = "black", 
+                      pt.size = 1, label.by = "type")
+  return(p)
+})
+
+patchwork::wrap_plots(plots, ncol = 2)
+
+```
+
+### Manual alignment
+***
+
+With this we should be able to run `ManualAlignImages`. Here we need to 
+adjust the MSI section so that it fits with the RNA data section. This 
+will be the most time consuming step of this notebook.
+
+To align the data, we need to apply rotation, translations and distortions
+using the shiny app opened by `ManualAlignImages`.
+
+NOTE: The tissue outline for samples "V11T17-105_A1" and "V11T17-105_B1" 
+are difficult to align, since parts of the tissue are cropped out. The 
+alignment of these datasets might therefore be unreliable.
+
+Here are the settings I used:
+    
+```{r}
+
+transforms <- data.frame(
+  sample_id = names(se.MSI.withIMG.list),
+  rotation_angle = c(89.6, 91.2, 89.3, 89.1, 89.8, 89.1, 89.5, 89.8, 89.2, 89.4, 89, 89.6),
+  move_along_x_axis = c(151, 163, 147, 161, 152, 215, 108, 1, 52, 186, 106, 66),
+  move_along_y_axis = c(-175, -165, -139, -193, -100, -126, -96, -125, 6, -46, -154, -7),
+  blue_axis_angle = c(50.8, 48.7, -49.2, 55.3, 55.3, 54.6, 53.4, 50, 48.7, 55.8, 52.3, 55.3),
+  blue_axis_stretch = c(1.13, 1.12, 1.19, 1.18, 1.17, 1.17, 1.15, 1.17, 1.18, 1.18, 1.19, 1.19),
+  red_axis_angle = c(49, 48.7, -49.3, -52.3, 55.2, 54.6, 53.4, 46.5, 45.6, 54.4, 42.3, 53.8),
+  red_axis_stretch = c(1.19, 1.19, 1.2, 1.2, 1.22, 1.21, 1.19, 1.17, 1.19, 1.19, 1.2, 1.19)
+)
+transforms
+
+```
+
+Run the alignment function ofn each dataset.
+
+```{r eval=FALSE}
+
+se.merged.list[[1]] <- ManualAlignImages(se.merged.list[[1]])
+se.merged.list[[2]] <- ManualAlignImages(se.merged.list[[2]])
+se.merged.list[[3]] <- ManualAlignImages(se.merged.list[[3]])
+se.merged.list[[4]] <- ManualAlignImages(se.merged.list[[4]])
+se.merged.list[[5]] <- ManualAlignImages(se.merged.list[[5]])
+se.merged.list[[6]] <- ManualAlignImages(se.merged.list[[6]])
+se.merged.list[[7]] <- ManualAlignImages(se.merged.list[[7]])
+se.merged.list[[8]] <- ManualAlignImages(se.merged.list[[8]])
+se.merged.list[[9]] <- ManualAlignImages(se.merged.list[[9]])
+se.merged.list[[10]] <- ManualAlignImages(se.merged.list[[10]])
+se.merged.list[[11]] <- ManualAlignImages(se.merged.list[[11]])
+se.merged.list[[12]] <- ManualAlignImages(se.merged.list[[12]])
+
+```
+
+The alignment seems to have gone pretty well :-)
+
+```{r fig.width=10, fig.height=10}
+
+se.merged.list <- setNames(se.merged.list, nm = names(se.RNA.list))
+plots <- lapply(names(se.merged.list), function(nm) {
+  se.merged <- se.merged.list[[nm]]
+  se.merged$sample_type <- ifelse(GetStaffli(se.merged)@meta.data$sample == "1", "RNA", "MSI")
+  p <- ST.FeaturePlot(se.merged, features = "sample_type", ncol = 2, pt.size = 1.5) &
+    theme(legend.position = "none", plot.background = element_rect(fill = "lightgray")) &
+    labs(title = nm)
+  return(p)
+})
+
+patchwork::wrap_plots(plots, ncol = 3)
+
+```
+
+Now that the images are aligned, we still have one last step left to put 
+the MSI and Visium coordinates in the same "space".
+
+From now on, we'll have the coordinates stored as a data.frame instead of 
+using the Seurat objects. Below, we calculate a scaling factor to adjust 
+the MSI coordinates to fit into the same coordinate system as the RNA data. 
+
+```{r fig.width=12, fig.height=14}
+
+aligned_coordinates <- do.call(rbind, lapply(names(se.merged.list), function(nm) {
+  dims <- GetStaffli(se.merged.list[[nm]])@dims
+  sf <- dims$`1`$width/dims$`2`$width
+  coords <- cbind(se.merged.list[[nm]][[]], GetStaffli(se.merged.list[[nm]])@meta.data) |>
+    tibble::rownames_to_column(var = "barcode") |>
+    mutate(barcode = gsub(replacement = "_1", x = barcode, pattern = "_\\d")) |>
+    select(barcode, warped_x, warped_y, nFeature_MSI) |>
+    mutate(sample_type = case_when(is.na(nFeature_MSI) ~ "RNA",
+                                   !is.na(nFeature_MSI) ~ "MSI")) |>
+    mutate(warped_x = case_when(sample_type == "MSI" ~ warped_x*sf, TRUE ~ warped_x),
+           warped_y = case_when(sample_type == "MSI" ~ warped_y*sf, TRUE ~ warped_y),
+           sample_id = nm) |>
+    select(barcode, warped_x, warped_y, sample_id, sample_type)
+  return(coords)
+}))
+
+p <- ggplot(aligned_coordinates, aes(warped_x, warped_y,color = sample_type)) +
+  geom_point(size = 0.5) +
+  facet_wrap(~sample_id, ncol = 3)
+
+p
+
+```
+
+```{r eval=FALSE}
+
+# Export plot
+p <- ggrastr::rasterize(p, layers = "Point", dpi = 300, dev = "ragg")
+pdf("results/plots/aligned_coordinates_spatial_plot.pdf", width = 12, height = 14)
+print(p)
+dev.off()
+
+```
+
+## data integration
+***
+
+Now we just need to come up with a way of "integrating" the data. 
+I can think of two simple strategies:
+
+  1. For the MSI data pixels, assign at least 1 nearest neighbor from 
+  the RNA data spots and obtain the average expression for each gene
+  2. For the MSI data pixels, assign up to k nearest neighbors from the 
+  RNA data spots and obtain the average expression for each gene
+
+We also need to apply some kind of distance threshold to remove spots that are too far from a neighbor in the other data set.
+
+First, let's calculate the pairwise distances between the two data sets:
+
+```{r include=FALSE}
+
+knn_spatial_df_list <- readRDS(file = "../R_objects/knn_spatial_df_list")
+
+```
+
+
+```{r eval=FALSE}
+
+# Split coordinates into a list
+aligned_coordinates_list <- split(aligned_coordinates, aligned_coordinates$sample_id)
+
+# Find 5 closest spatial neighbors 
+knn_spatial_df_list <- lapply(aligned_coordinates_list, function(coords) {
+  
+  # get spatial coordinates for RNA and MSI data
+  set1 = subset(coords, sample_type == "RNA")[, c("barcode", "warped_x", "warped_y")] |>
+    data.frame(row.names = 1)
+  set2 = subset(coords, sample_type == "MSI")[, c("barcode", "warped_x", "warped_y")] |>
+    data.frame(row.names = 1)
+  
+  # Calculate pairwise distances using k nearest neighbors algorithm
+  knn_spatial_df <- kNN(x = set1, k = 5, query = set2)
+  
+  # Create a data.frame with MSI pixel IDs (from) pointing to its closest
+  # Visium spot (to) and the distance between the two (distance)
+  knn_spatial_df <- data.frame(from = rownames(set2)[rep(1:nrow(knn_spatial_df$id), 5)],
+                                 to = rownames(set1)[as.vector(knn_spatial_df$id)],
+                                 distance = as.vector(knn_spatial_df$dist))
+  
+  # Add spatial coordinates for "from" and "to"
+  knn_spatial_df <- knn_spatial_df |>
+    mutate(x = set2[from, "warped_x"],
+           x_end = set1[to, "warped_x"],
+           y = set2[from, "warped_y"],
+           y_end = set1[to, "warped_y"])
+  
+  return(knn_spatial_df)
+})
+
+```
+
+What we see in the plot below are the MSI data points in red 
+and their closest RNA data neighbors in blue. We need to get 
+rid of the MSI data points where we don't have any RNA data points.
+
+```{r fig.width=12, fig.height=30}
+
+plots <- lapply(names(knn_spatial_df_list), function(nm) {
+  knn_spatial_df <- knn_spatial_df_list[[nm]]
+  p <- ggplot() +
+    geom_segment(data = knn_spatial_df, aes(x = x, xend = x_end, y = y, yend = y_end)) +
+    geom_point(data = knn_spatial_df, aes(x, y), color = "red", size = 0.5) +
+    geom_point(data = knn_spatial_df, aes(x_end, y_end), color = "blue", size = 0.5) +
+    scale_y_reverse() +
+    labs(title = nm)
+  return(p)
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 2)
+p
+
+```
+
+```{r eval=FALSE, include=FALSE}
+
+# Export plot
+# this plot gets too big with PDF format because of all of the segments
+for (i in seq_along(plots)) {
+  jpeg(paste0("results/plots/nearest_neighbor_plots/", names(se.MSI.list)[i], ".jpeg"), width = 2000, height = 2000, res = 300)
+  print(plots[[i]])
+  dev.off()
+}
+
+```
+
+
+If we look at the distance histogram, it should be relatively easy 
+to spot what data points are located too far away from each other. 
+Somewhere around 35 looks like a reasonable cutoff based on the 
+distance histogram below. 
+
+```{r}
+
+gg <- do.call(rbind, lapply(names(knn_spatial_df_list), function(nm) {
+  knn_spatial_df <- knn_spatial_df_list[[nm]]
+  knn_spatial_df$sample_id <- nm
+  return(knn_spatial_df)
+}))
+
+ggplot(gg, aes(distance)) +
+  geom_histogram(bins = 100) +
+  scale_x_log10() +
+  geom_vline(xintercept = 35, linetype = "dashed", color = "red")
+
+```
+
+Let's filter out data points that do not have a close match in the other data set:
+
+```{r fig.width=5, fig.height=5}
+
+knn_spatial_df_filtered_list <- lapply(knn_spatial_df_list, function(knn_spatial_df) {
+  knn_spatial_df <- knn_spatial_df |>
+    dplyr::filter(distance < 35)
+  return(knn_spatial_df)
+})
+
+```
+
+```{r fig.width=12, fig.height=30}
+
+plots <- lapply(names(knn_spatial_df_filtered_list), function(nm) {
+  knn_spatial_df <- knn_spatial_df_filtered_list[[nm]]
+  p <- ggplot() +
+    geom_segment(data = knn_spatial_df, aes(x = x, xend = x_end, y = y, yend = y_end)) +
+    geom_point(data = knn_spatial_df, aes(x, y), color = "red", size = 0.5) +
+    geom_point(data = knn_spatial_df, aes(x_end, y_end), color = "blue", size = 0.5) +
+    scale_y_reverse() +
+    labs(title = nm)
+  return(p)
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 2)
+p
+
+```
+
+```{r eval=FALSE, include=FALSE}
+
+# Export plot
+# this plot gets too big with PDF format because of all of the segments
+for (i in seq_along(plots)) {
+  jpeg(paste0("results/plots/nearest_neighbor_filtered_plots/", names(knn_spatial_df_filtered_list)[i], ".jpeg"), width = 2000, height = 2000, res = 300)
+  print(plots[[i]])
+  dev.off()
+}
+
+```
+
+First we can filter the data to keep only 1 RNA data neighbor per MSI data 
+point. This will lead to some loss of data, but is a quite conservative approach.
+An alternative would be to average the data between nearest neighbors, thus
+interpolating between data points.
+
+```{r}
+
+knn_spatial_df_filtered_list <- setNames(lapply(names(knn_spatial_df_filtered_list), function(nm) {
+  
+  knn_spatial_df_filtered <- knn_spatial_df_filtered_list[[nm]]
+  
+  res <- knn_spatial_df_filtered |> 
+    dplyr::arrange(from, distance) |>
+    dplyr::group_by(from) |>
+    dplyr::slice_head(n = 1)
+  
+  sprintf("Spots removed from sample %s: %s", nm, sum(duplicated(res$to)))
+  
+  # Remove duplicated Visium spots 
+  res <- res[!duplicated(res$to), ]
+  
+  return(res)
+  
+}), nm = names(knn_spatial_df_list))
+
+```
+
+Now we can see that every data point in the MSI data has a match in the RNA data. 
+However, with this current approach you can see that the regular pattern of the two
+data types lead to a loss of data in in certain parts of the tissue. Interpolation
+between data points could be used to avoid this.
+
+```{r fig.width=12, fig.height=30}
+
+plots <- lapply(names(knn_spatial_df_filtered_list), function(nm) {
+  knn_spatial_df <- knn_spatial_df_filtered_list[[nm]]
+  p <- ggplot() +
+    geom_segment(data = knn_spatial_df, aes(x = x, xend = x_end, y = y, yend = y_end)) +
+    geom_point(data = knn_spatial_df, aes(x, y), color = "red", size = 0.5) +
+    geom_point(data = knn_spatial_df, aes(x_end, y_end), color = "blue", size = 0.5) +
+    scale_y_reverse() +
+    labs(title = nm)
+  return(p)
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 2)
+p
+
+```
+
+```{r eval=FALSE, include=FALSE}
+
+# Export plot
+# this plot gets too big with PDF format because of all of the segments
+for (i in seq_along(plots)) {
+  jpeg(paste0("results/plots/nearest_neighbor_1RNA_1MSI_plots/", names(knn_spatial_df_filtered_list)[i], ".jpeg"), width = 2000, height = 2000, res = 300)
+  print(plots[[i]])
+  dev.off()
+}
+
+```
+
+### Wrapping up alignment process
+***
+
+Now that we have our aligned RNA and MSI coordinates, let's export these
+as tables:
+
+```{r}
+
+for (nm in names(knn_spatial_df_filtered_list)) {
+  write.csv(x = knn_spatial_df_filtered_list[[nm]], file = paste0("results/tables/", nm, "_nearest_neighbors.csv"), quote = FALSE, row.names = FALSE)
+}
+
+```
+
+## Create multimodal assay
+***
+
+Now we can create a new `Seurat` object where we can analyze 
+the two modalities jointly. Here we will simply add the MSI 
+data to our RNA Seurat object.
+
+```{r include=FALSE}
+
+se.multi.list <- readRDS("../R_objects/se.multi.list")
+
+```
+
+Create a new Seurat object which holds both data modalities.
+
+```{r eval=FALSE}
+
+se.multi.list <- setNames(lapply(names(se.merged.list), function(nm) {
+  knn_spatial_df_filtered <- knn_spatial_df_filtered_list[[nm]]
+  se.multi <- se.RNA.list[[nm]]
+  se.multi <- SubsetSTData(se.multi, spots = knn_spatial_df_filtered$to)
+  MSI <- se.MSI.list[[nm]]@assays$MSI@counts[, knn_spatial_df_filtered$from]
+  colnames(MSI) <- knn_spatial_df_filtered$to
+  se.multi[["MSI"]] <- CreateAssayObject(counts = MSI)
+  return(se.multi)
+}), nm = names(se.merged.list))
+
+```
+
+Now we can also recalculate some basic QC metrics.
+
+```{r eval=FALSE}
+
+se.multi.list <- lapply(se.multi.list, function(se.multi) {
+  se.multi$nFeature_RNA <- colSums(GetAssayData(se.multi, slot = "counts", assay = "RNA") > 0)
+  se.multi$nFeature_MSI <- colSums(GetAssayData(se.multi, slot = "counts", assay = "MSI") > 0)
+  return(se.multi)
+})
+
+```
+
+And let's have a look at these QC metrics spatially.
+
+```{r fig.width=6, fig.height=3}
+
+ST.FeaturePlot(se.multi, features = c("nFeature_RNA", "nFeature_MSI"))
+
+```
+
+## Joint analysis
+***
+
+NOTE: I selected "CLR" normalization for the MSI data, but another 
+normalization method might be more appropriate.
+
+```{r eval=FALSE}
+
+se.multi.list <- lapply(names(se.multi.list), function(nm) {
+  
+  se.multi <- se.multi.list[[nm]]
+  cat(sprintf("Running analysis for sample %s", nm))
+  
+  # Normalize RNA data
+  DefaultAssay(se.multi) <- 'RNA'
+  se.multi <- NormalizeData(se.multi, verbose = FALSE) |> 
+    FindVariableFeatures(verbose = FALSE) |> 
+    ScaleData(verbose = FALSE) |> 
+    RunPCA(verbose = FALSE) |>
+    RunUMAP(reduction = "pca", dims = 1:30, reduction.name = "RNA.umap", verbose = FALSE) |>
+    FindNeighbors(reduction = "pca", dims = 1:30, verbose = FALSE) |>
+    FindClusters(verbose = FALSE)
+  se.multi$RNA_clusters <- se.multi$seurat_clusters
+  
+  # Normalize MSI data
+  DefaultAssay(se.multi) <- 'MSI'
+  se.multi <- NormalizeData(se.multi, normalization.method = "CLR", verbose = FALSE) |> 
+    FindVariableFeatures(nfeatures = 200, verbose = FALSE) |> 
+    ScaleData(verbose = FALSE) |> 
+    RunPCA(reduction.name = "msipca", dims = 1:10, verbose = FALSE) |>
+    RunUMAP(reduction = "msipca", dims = 1:10, reduction.name = "MSI.umap", verbose = FALSE) |>
+    FindNeighbors(reduction = "msipca", dims = 1:10, verbose = FALSE) |>
+    FindClusters(verbose = FALSE)
+  se.multi$MSI_clusters <- se.multi$seurat_clusters
+  
+  return(se.multi)
+})
+
+```
+
+We can look at the UMAPs defined by either RNA or MSI data. It is clear that the RNA
+data is more complex it is still possible to find clustered data points in the
+MSI data as well.
+
+```{r fig.width=8, fig.height=30}
+
+plots <- lapply(se.multi.list, function(se.multi) {
+  p <- DimPlot(se.multi, group.by = "RNA_clusters", reduction = "RNA.umap") | 
+    DimPlot(se.multi, group.by = "MSI_clusters", reduction = "MSI.umap")
+  return(p)
+})
+
+patchwork::wrap_plots(plots, ncol = 1)
+
+```
+
+### Joint clustering
+***
+
+see [vignette](https://satijalab.org/seurat/articles/weighted_nearest_neighbor_analysis.html) for more details.
+
+For each cell, we calculate its closest neighbors in the dataset based on a 
+weighted combination of RNA and protein similarities. The cell-specific modality 
+weights and multimodal neighbors are calculated in a single function, which takes 
+~2 minutes to run on this data set. We specify the dimensionality of each modality 
+(similar to specifying the number of PCs to include in clustering, but you can 
+vary these settings to see that small changes have minimal effect on the overall 
+results.
+
+```{r}
+
+# Identify multimodal neighbors. These will be stored in the neighbors slot, 
+# and can be accessed using se.multi[['weighted.nn']]
+# The WNN graph can be accessed at se.multi[["wknn"]], 
+# and the SNN graph used for clustering at se.multi[["wsnn"]]
+# Cell-specific modality weights can be accessed at se.multi$RNA.weight
+
+se.multi.list <- lapply(se.multi.list, function(se.multi) {
+  se.multi <- FindMultiModalNeighbors(
+    se.multi, reduction.list = list("pca", "msipca"), 
+    dims.list = list(1:30, 1:10), modality.weight.name = "RNA.weight"
+  )
+  return(se.multi)
+})
+
+```
+
+We can now use these results for downstream analysis, such as visualization and 
+clustering. For example, we can create a UMAP visualization of the data based on 
+a weighted combination of RNA and protein data We can also perform graph-based 
+clustering and visualize these results on the UMAP, alongside a set of cell annotations.
+
+```{r eval=FALSE}
+
+se.multi.list <- lapply(se.multi.list, function(se.multi) {
+  se.multi <- RunUMAP(se.multi, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_", n.epochs = 1e3, min.dist = 0.15)
+  se.multi <- FindClusters(se.multi, graph.name = "wsnn", algorithm = 3, resolution = 2, verbose = FALSE)
+  se.multi$MM_clusters <- se.multi$seurat_clusters
+  return(se.multi)
+})
+
+```
+
+Now we can sort the clusters by decreasing RNA weight.
+
+```{r}
+
+plots <- lapply(se.multi.list, function(se.multi) {
+  p <- VlnPlot(se.multi, features = "RNA.weight", sort = TRUE)
+  return(p)
+})
+
+patchwork::wrap_plots(plots[[3]], ncol = 1)
+
+```
+
+And we can compare the results for RNA only, MSI only and RNA+MSI side by side
+
+```{r fig.width=12, fig.height=4}
+
+plots <- lapply(se.multi.list, function(se.multi) {
+  p1 <- DimPlot(se.multi, reduction = "RNA.umap", group.by = "RNA_clusters")
+  p2 <- DimPlot(se.multi, reduction = "MSI.umap", group.by = "MSI_clusters")
+  p3 <- DimPlot(se.multi, reduction = "wnn.umap", group.by = "MM_clusters")
+  p <- p1 + p2 + p3 + patchwork::plot_layout(ncol = 3)
+  return(p)
+})
+
+```
+
+```{r fig.width=6, fig.height=6}
+
+DefaultAssay(se.multi.list[[1]])
+FeatureOverlay(se.multi.list[[5]], features = "MM_clusters")
+
+```
+
+```{r eval=FALSE, include=FALSE}
+
+saveRDS(se.MSI.list, file = "R_objects/se.MSI.list")
+saveRDS(se.RNA.list, file = "R_objects/se.RNA.list")
+saveRDS(se.merged.list, file = "R_objects/se.merged.list")
+saveRDS(se.multi.list, file = "R_objects/se.multi.list")
+saveRDS(knn_spatial_df_list, "R_objects/knn_spatial_df_list")
+saveRDS(knn_spatial_df_filtered_list, "R_objects/knn_spatial_df_filtered_list")
+
+```
+
+
+# Date
+***
+
+```{r}
+date()
+```
+
+# Session
+***
+
+```{r}
+devtools::session_info()
+```
+

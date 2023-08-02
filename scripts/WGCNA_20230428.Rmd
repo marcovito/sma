@@ -1,0 +1,392 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Load libraries
+
+```{r}
+
+library(niceRplots)
+library(rafalib)
+library(Matrix)
+library(WGCNA)
+library(future)
+library(future.apply)
+library(irlba)
+library(Seurat)
+library(fastcluster)
+library(openxlsx)
+library(igraph)
+library(matrixStats)
+library(enrichR)
+
+pal <- c(RColorBrewer::brewer.pal(9,"Set1"),RColorBrewer::brewer.pal(9,"Pastel1"),RColorBrewer::brewer.pal(8,"Accent"),RColorBrewer::brewer.pal(8,"Set2"),RColorBrewer::brewer.pal(8,"Pastel2") ,scales::hue_pal()(8))
+
+```
+
+# Define function to plot KNN graph
+
+```{r}
+# ADDS GRAPH TO THE PLOT
+draw_graph <- function(layout, graph, lwd = 0.2, col = "grey") {
+    res <- rep(x = 1:(length(graph@p) - 1), times = (graph@p[-1] - graph@p[-length(graph@p)]))
+    segments(x0 = layout[graph@i + 1, 1], x1 = layout[res, 1], y0 = layout[graph@i +
+        1, 2], y1 = layout[res, 2], lwd = lwd, col = col)
+}
+setwd("/home/marco.vicari/projects/test")
+```
+
+# Load data and metadata
+
+```{r}
+
+# LOAD DATA LIST
+project.dir <- "/home/marco.vicari/projects/sma_final_sub_230729/sma" #change this and the following paths depending on where you placed the data folder
+data.dir <- paste0(project.dir, "/data")
+data <- readRDS(paste0(data.dir, "/misc/se.multi.list"))
+names(data) <- unlist(lapply(data, function(x){ unique(x$sample_id) }))
+
+# GROUP SLIDES BY TECHNOLOGY
+analysis_list <- list(
+  DHB = c("V11L12-038_A1","V11L12-038_B1"),
+  m9AA = c("V11L12-038_D1"),
+  FMP10_Striatum = c("V11L12-109_A1","V11L12-109_B1","V11L12-109_C1"),
+  FMP10_SubNigra = c("V11T16-085_A1","V11T16-085_B1","V11T16-085_C1")
+  # FMP10_Human = c("V11T17-102_A1","V11T17-102_B1","V11T17-102_C1","V11T17-102_D1")
+)
+
+# EXTRACT METADADTA MATRIX FROM OBJECT
+metadata <- lapply(data, function(x){x@meta.data})
+metadata <- do.call(rbind, metadata)
+saveRDS(metadata, "metadata_all.rds")
+
+```
+
+
+## Build KNN graphs
+
+
+```{r}
+
+# CREATE NEW OPTPUT EXCEL FILES/WORKBOOKS
+if(file.exists("peak_associated_genes.xlsx")){ file.remove("peak_associated_genes.xlsx")}
+if(file.exists("peak_modules.xlsx")){ file.remove("peak_modules.xlsx")}
+wb3 <- openxlsx::createWorkbook("peak_associated_genes.xlsx")
+wb4 <- openxlsx::createWorkbook("peak_modules.xlsx")
+
+
+# FOR EACH MSI MATRIX, DO:
+for(i in names(analysis_list)){ 
+  message(paste0("   > processing ",i))
+  
+  # FETCH THE CORRESPONDING  SLIDE NAMES
+  dataset_use <- analysis_list[[i]]
+  
+  # LOAD AND MERGE THE DATA
+  data_use <- data[dataset_use]
+  if(length(data_use)>1){ data_use <- merge(data_use[[1]],data_use[-1]) 
+  } else { data_use <- data_use[[1]] }
+  dim(data_use)
+  
+  # VISIUM: SELECTING HIGHLY VARIABLE FEATURES
+  data_use <- FindVariableFeatures(data_use, nfeatures = 3000, assay="RNA")
+  RNA_data <- data_use@assays$RNA@data[data_use@assays$RNA@var.features , ]
+  RNA_data <- RNA_data[rowSums(RNA_data > 0) >= 10,]
+  range(RNA_data)
+  dim(RNA_data)
+
+  # LOAD AND MERGE THE MSI DATA
+  MSI_data <- data_use@assays$MSI@data
+  MSI_data <- MSI_data[rowSums(MSI_data > 0) >= 10,]
+  range(MSI_data)
+  dim(MSI_data)
+  
+  # COMPUTE JOINT PCA EMBEDDINGS
+  joint_PC <- irlba::irlba( (Matrix::rbind2(RNA_data,MSI_data)) , nv = 20 , center = TRUE, scale. = TRUE)
+  rownames(joint_PC$u) <- c(rownames(RNA_data),rownames(MSI_data))
+  saveRDS(joint_PC, paste0(i,"_joint_PCA_ST_MSI.rds"))
+  
+  # COMPUTE SEARCH TREE FROM ST AND MSI
+  ann_ST <- RcppHNSW::hnsw_build( joint_PC$u[rownames(RNA_data),] , distance = "cosine")
+  ann_MSI <- RcppHNSW::hnsw_build( joint_PC$u[rownames(MSI_data),] , distance = "cosine")
+  # knn <- RcppHNSW::hnsw_search( joint_PC$u[rownames(MSI_data),] , k = 10 , ann = ann_MSI)
+  knn <- RcppHNSW::hnsw_search( joint_PC$u[rownames(MSI_data),] , k = 10 , ann = ann_ST)
+  
+  # SAVE KNN GRAPH TO EXCEL
+  knn$names <- matrix(rownames(RNA_data)[c(knn$idx) ],ncol = 10,byrow = F,dimnames = list(rownames(MSI_data)))
+  res <- cbind(knn$names,knn$dist)
+  res <- res[order( as.numeric(rownames(res)) ),]
+  colnames(res) <- c(paste0("GeneRank",1:10),paste0("weight_GeneRank",1:10))
+  res <- data.frame(res)
+  openxlsx::addWorksheet(wb = wb3, sheetName = paste0(i))
+  openxlsx::writeData(wb3, sheet = paste0(i), res, rowNames = T,colNames = T)
+  
+  # CONVERT GRAPH TO SPARSE MATRIX NOTATION
+  nn <- sparseMatrix(
+    i = rep( 1:nrow(knn$idx), ncol(knn$idx) ), 
+    j = c( knn$idx ), 
+    x    = c( knn$dist )*1, 
+    dims = c( nrow(knn$idx) , nrow(RNA_data) ) ,
+    dimnames = list(rownames( MSI_data ),rownames(RNA_data)),
+    repr = "C")
+  nn <- drop0(round(nn,2))
+  
+  # SAVE INTEGRATED GRAPH AND MATRIX
+  saveRDS(knn, paste0(i,"_MSI_ST_joint_knn.rds"))
+}
+
+
+openxlsx::saveWorkbook(wb3, "peak_associated_genes.xlsx", overwrite = TRUE)
+openxlsx::saveWorkbook(wb4, "peak_modules.xlsx", overwrite = TRUE)
+```
+
+
+
+## Plotting the SRT-MSI networrk for each matrix 
+
+```{r}
+
+# CREATE NEW OPTPUT EXCEL FILES/WORKBOOKS
+if(file.exists("Joint_SRT_MSI_spinglass_modules.xlsx")){ file.remove("Joint_SRT_MSI_spinglass_modules.xlsx")}
+wb <- openxlsx::createWorkbook("Joint_SRT_MSI_spinglass_modules.xlsx")
+
+# FOR EACH MSI MATRIX, DO:
+for(i in names(analysis_list)){
+  
+  # LOAD THE JOINT GRAPHDS
+  knn <- readRDS( paste0(i,"_MSI_ST_joint_knn.rds"))
+  knn$dist[knn$dist >= 1] <- 0.99
+
+  
+  # CREATE A EDGE DATA.FRAME (FOR NON-SYMMETRIC GRAPHS)
+  df <- data.frame(  
+    x = rep( rownames(knn$names), ncol(knn$names) ) , 
+    y = c(knn$names), 
+    weight = 1 - c(knn$dist) )
+  g <- igraph::graph_from_data_frame( df )
+  
+  
+  # COMPUTE GRAPH LAYOUT
+  message("   > computing layout")
+  l <- igraph::layout_with_drl(
+    graph = g, 
+    seed = 42, 
+    weights = edge_attr(g,"weight"),
+    options = drl_defaults$default)
+  rownames(l) <- vertex_attr(g,"name")
+  plot(l)
+  
+  # IMPROVE LAYOUT VISUALIZATION (TO AVOID OVERLAPPING POINTS)
+  # This can be achieved by simply adding some random values to each point
+  message("   > optmizing layout")
+  l3 <- l
+  set.seed(1)
+  l3[,1] <- l[,1] + rnorm(nrow(l))*diff(range(l[,1]))/100
+  set.seed(2)
+  l3[,2] <- l[,2] + rnorm(nrow(l))*diff(range(l[,2]))/100
+  edge_weight <- edge_attr(g,"weight")
+  edge_weight <- (edge_weight - min(edge_weight))/(max(edge_weight)-min(edge_weight))
+  edge_color <- paste0(colorRampPalette(c("grey80","grey20"))(99)[ floor(edge_weight*98)+1 ],20)
+  
+  igraph::clique_size_counts(g)
+  igraph::clusters(g)
+  g2 <- igraph::cliques(g)
+  g2
+  
+  # IDENTIFY GENE-METABOLITE MODULES/CLUSTERS
+  # Here, we are bound to use clustering algorithms for non-symmetric graphs 
+  # (Louvain and Leiden only work with symmetric graphs)
+  cl3 <- igraph::cluster_walktrap(
+    graph = g, 
+    weights = edge_attr(g,"weight"),
+    steps = 20)
+  message("   > finding modules")
+  o <- order(cl3$membership)
+  write.csv( 
+    x = cbind(
+      feature           = cl3$names, 
+      spinglass_module = cl3$membership)[o,] , 
+    file = paste0(i,"spinglass_modules.csv"),row.names = T)
+  
+  
+  # PLOT JOINT GRAPH
+  message("   > plotting graph")
+  pdf(paste0(i,"_ST_MSI_KNN_layout.pdf"), width=23, heigh=10, useDingbats = F)
+    # (PER OMICS)
+    layout(matrix(c(1,2),ncol = 2,byrow = T ))
+    par(mar=c(2.5,2.5,2,8))
+    plot( l3 , type="n", frame.plot = F, axes=F, main=paste0( i," ( OMIC )"))
+    segments(x0 = l3[df[,1], 1], x1 = l3[df[,2], 1], 
+             y0 = l3[df[,1], 2], y1 = l3[df[,2], 2], 
+             lwd = edge_weight+0.1, col = edge_color)
+    points( l3 , cex=1, pch=16, 
+            col = c("#FA807290","#551a8b90")[grepl("^[0-9]",vertex_attr(g,"name"))+1])
+    legend(par("usr")[2],par("usr")[4],legend = c("genes","metabolites"),
+           fill = c("#FA807290","#551a8b90"), xpd=T)
+    text( l3 , labels = rownames(l3), cex=.1)
+    
+    # (PER MODULE)
+    plot( l3 , type="n", frame.plot = F, axes=F, main=paste0( i," (spinglass clusters)"))
+    segments(x0 = l3[df[,1], 1], x1 = l3[df[,2], 1], 
+             y0 = l3[df[,1], 2], y1 = l3[df[,2], 2], 
+             lwd = edge_weight+0.1, col = edge_color)
+    points( l3 , cex=1, pch=16, col=pal[as.numeric(as.factor(cl3$membership))])
+    legend(par("usr")[2],par("usr")[4],legend = levels(factor(cl3$membership)),fill = pal, xpd=T)
+    text( l3 , labels = rownames(l3), cex=.1)
+  dev.off()   
+  
+  
+  # SAVE JOINT CLUSTER AND LAYOUT INTO FILE SPINGLASS 
+  message("   > saving results to XLSX")
+  openxlsx::addWorksheet(wb = wb, sheetName = paste0(i))
+  openxlsx::writeData(
+    wb = wb, 
+    sheet = paste0(i), 
+    x = data.frame(
+      feature = cl3$names,
+      module = cl3$membership,
+      OMIC_class = c("gene","metabolite")[ grepl("^[0-9]",cl3$names)+1 ],
+      dim1 = l3[,1],
+      dim2 = l3[,2]
+      )[o,]
+    )
+
+}
+ 
+openxlsx::saveWorkbook(wb, "Joint_SRT_MSI_spinglass_modules.xlsx", overwrite = TRUE)
+```
+
+
+
+
+## For each sprayed matrix, find the neighbour genes
+
+```{r}
+
+# CREATE NEW OPTPUT EXCEL FILES/WORKBOOKS
+if(file.exists("peak_associated_genes.xlsx")){ file.remove("peak_associated_genes.xlsx")}
+if(file.exists("peak_modules.xlsx")){ file.remove("peak_modules.xlsx")}
+wb3 <- openxlsx::createWorkbook("peak_associated_genes.xlsx")
+wb4 <- openxlsx::createWorkbook("peak_modules.xlsx")
+
+
+pdf(paste0("MSI_peack_graph.pdf"),width = 20,height = 5,useDingbats = F)
+
+# FOR EACH MSI MATRIX, DO:
+for(i in names(analysis_list) ){
+  
+  # FETCH THE CORRESPONDING  SLIDE NAMES
+  dataset_use <- analysis_list[[i]]
+  
+  # LOAD AND MERGE THE DATA
+  data_use <- data[dataset_use]
+  if(length(data_use)>1){ data_use <- merge(data_use[[1]],data_use[-1]) 
+  } else { data_use <- data_use[[1]] }
+  
+  # VISIUM: SELECTING HIGHLY VARIABLE FEATURES
+  data_use <- FindVariableFeatures(data_use, nfeatures = 2000, assay="RNA")
+  RNA_data <- data_use@assays$RNA@data[data_use@assays$RNA@var.features , ]
+  RNA_data <- RNA_data[rowSums(RNA_data > 0) >= 10,]
+  dim(RNA_data)
+
+  # LOAD AND MERGE THE MSI DATA
+  MSI_data <- data_use@assays$MSI@data
+  MSI_data <- MSI_data[rowSums(MSI_data > 0) >= 10,]
+  dim(MSI_data)
+  
+  # COMPUTE JOINT PCA EMBEDDINGS
+  joint_PC <- irlba::irlba( Matrix::rbind2(RNA_data,MSI_data) , nv = 20 )
+  rownames(joint_PC$u) <- c(rownames(RNA_data),rownames(MSI_data))
+  saveRDS(joint_PC, paste0(i,"_joint_PCA_ST_MSI.rds"))
+  
+  # COMPUTE SEARCH TREE FROM ST AND MSI
+  ann_ST <- RcppHNSW::hnsw_build( joint_PC$u[rownames(RNA_data),] , distance = "cosine")
+  ann_MSI <- RcppHNSW::hnsw_build( joint_PC$u[rownames(MSI_data),] , distance = "cosine")
+  knn <- RcppHNSW::hnsw_search( joint_PC$u[rownames(MSI_data),] , k = 10 , ann = ann_MSI)
+  
+  # CONVERT GRAPH TO SPARSE MATRIX NOTATION
+  nn <- sparseMatrix(i = rep( 1:nrow(knn$idx), ncol(knn$idx) ), j = c( knn$idx ),  
+                     x    = c( knn$dist )*1, dims = c( nrow(knn$idx) , nrow(knn$idx) ) ,
+                     dimnames = list(rownames(MSI_data),rownames(MSI_data)),
+                     repr = "C")
+  
+  # ADJUST MATRIX TO SIMMETRIC AND MUTUAL NEIGHBORS
+  nna <- drop0(round(nn,2))
+  nn <- (nna + t(nna))
+  nn@x <- nn@x / ((((nna>0) + t(nna>0)))*1)@x
+  isSymmetric(nn)
+  dim(nn)
+  
+  # BUILD IGRAPH OBJETC
+  g <- igraph::graph_from_adjacency_matrix( nn , weighted = T, mode = "undirected")
+  l <- igraph::layout_with_drl(g, seed = 42, weights = NA, options = drl_defaults$coarsen)
+  colnames(l) <- c("dim1","dim2")
+
+  # SAVE JOINT GRAPH
+  saveRDS(knn, paste0(i,"_MSI_MSI_joint_knn.rds"))
+  saveRDS(nn, paste0(i,"_MSI_MSI_joint_knn_matrix.rds"))
+  saveRDS(g, paste0(i,"_MSI_MSI_joint_knn_igraph.rds"))
+
+  
+  # DEFINE METADATA FOR THE FEATURES (GENES VS MSI-PEAKS)
+  cl <- igraph::cluster_leiden(g,resolution = 1,objective_function = "modularity")
+  cl2 <- igraph::cluster_louvain(g,resolution = 1)
+  openxlsx::addWorksheet(wb = wb4, sheetName = paste0(i))
+  openxlsx::writeData(wb4, sheet = paste0(i), 
+                      cbind(peak=cl$names,louvain=cl2$membership,leiden=cl$membership,l,NA,
+                            matrix(rownames(MSI_data)[c(knn$idx) ],ncol = 10,byrow = F,dimnames = list(rownames(MSI_data),paste0("knn",1:10))) ),
+                      rowNames = T,colNames = T)
+  # write.csv2( cbind(peak=cl$names,louvain=cl2$membership,leiden=cl$membership,l) , paste0(i,"_peak_modules.csv"))
+  
+  
+  # PLOT JOINT GRAPH
+  layout(matrix(c(1:4),ncol = 4,byrow = T ))
+  plot( l , type="n", frame.plot = F, axes=F, main=paste0( i," (leiden)"))
+  draw_graph(layout = l, graph = nn)
+  points( l , cex=1, pch=16, col=pal[as.numeric(as.factor(cl$membership))])
+  empty_plot();   legend(par("usr")[1],par("usr")[4],legend = levels(factor(cl$membership)),fill = pal)
+  plot( l , type="n", frame.plot = F, axes=F, main=paste0( i," (louvain)"))
+  draw_graph(layout = l, graph = nn)
+  points( l , cex=1, pch=16, col=pal[as.numeric(as.factor(cl2$membership))])
+  empty_plot(); legend(par("usr")[1],par("usr")[4],legend = levels(factor(cl2$membership)),fill = pal)
+  
+  # FIND THE CLOSEST GENES TO EACH METABOLITE
+  knn2 <- RcppHNSW::hnsw_search( joint_PC$u[rownames(MSI_data),] , k = 10 , ann = ann_ST)
+  knn3 <- matrix(rownames(ST2_use)[c(knn2$idx) ],ncol = 10,byrow = F,dimnames = list(rownames(MSI_data)))
+  knn3 <- cbind(knn3,knn2$dist)
+  knn3 <- knn3[order( as.numeric(rownames(knn3)) ),]
+  colnames(knn3) <- c(paste0("GeneRank",1:10),paste0("weight_GeneRank",1:10))
+  knn3 <- data.frame(knn3)
+  # write.csv2(knn2 , paste0(i,"_peak_to_gene.csv"))
+  openxlsx::addWorksheet(wb = wb3, sheetName = paste0(i))
+  openxlsx::writeData(wb3, sheet = paste0(i), knn3, rowNames = T,colNames = T)
+  
+  # CONVERT GRAPH TO SPARSE MATRIX NOTATION
+  nn <- sparseMatrix(i = rep( 1:nrow(knn2$idx), ncol(knn2$idx) ), j = c( knn2$idx ),  
+                     x    = c( knn2$dist )*1, dims = c( nrow(knn2$idx) , nrow(RNA_data) ) ,
+                     dimnames = list(rownames(MSI_data ),rownames(RNA_data)),
+                     repr = "C")
+  
+  # ADJUST MATRIX TO SIMMETRIC and MUTUAL NEIGHBORS
+  nna <- drop0(round(nn,2))
+  
+  # SAVE INTEGRATED GRAPH AND MATRIX
+  saveRDS(knn2, paste0(i,"_MSI_ST_joint_knn.rds"))
+  saveRDS(nn, paste0(i,"_MSI_ST_joint_knn_matrix.rds"))
+  
+}
+dev.off()
+
+openxlsx::saveWorkbook(wb3, "peak_associated_genes.xlsx", overwrite = TRUE)
+openxlsx::saveWorkbook(wb4, "peak_modules.xlsx", overwrite = TRUE)
+```
+
+
+
+
+
+
+

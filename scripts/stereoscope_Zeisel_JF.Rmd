@@ -1,0 +1,193 @@
+---
+title: "Mouse_celltype_mapping"
+author: "Julia Foyer julia.foyer@scilifelab.se "
+date: '221028'
+output: 
+  html_document:
+    theme: cosmo
+    highlight: tango
+    css: style.css
+    code_folding: "hide"
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: false
+editor_options: 
+  chunk_output_type: console
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Cell type mapping for mouse brain
+
+```{r}
+library(Seurat)
+library(STutility)
+library(rhdf5)
+library(data.table)
+```
+
+## Prepare the ST data file
+
+```{r}
+DATA <- readRDS("/Users/juliafoyer/ST/Striatum/Mouse/ST/allRNA_10xFFBM_STUnF")
+
+#Filter out the human samples to only keep mouse
+DATA <- SubsetSTData(DATA, expression = Sample.ID != "V11T17-102_A1")
+DATA <- SubsetSTData(DATA, expression = Sample.ID != "V11T17-102_B1")
+DATA <- SubsetSTData(DATA, expression = Sample.ID != "V11T17-102_C1")
+DATA <- SubsetSTData(DATA, expression = Sample.ID != "V11T17-102_D1")
+```
+
+```{r}
+ST_counts <- DATA@assays$RNA@counts
+
+file <- "/Users/juliafoyer/ST/Striatum/Mouse/stereoscope_221022/striatum_mouse_ST_cnt_data.tsv"
+# counts_dense <- t(as.matrix(ST_counts))
+# write.table(counts_dense, file = file, sep = "\t", row.names = T, quote = F)
+
+counts_dense <- t(as.matrix(ST_counts[,1:20000]))
+write.table(counts_dense, file = file, sep = "\t", row.names = T, quote = F)
+
+counts_dense <- t(as.matrix(ST_counts[,20001:40000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(ST_counts[,40001:63499]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+```
+
+## Single cell
+For the deconvolution of the mouse data we used the dataset available at http://mousebrain.org/adolescent/downloads.html. You can download the data using this link https://storage.googleapis.com/linnarsson-lab-loom/l5_all.loom. This will download the l5_all.loom file for you that we use in the code from this point on.
+```{r}
+data <- Matrix::t(Matrix::Matrix(rhdf5::h5read("/Users/juliafoyer/ST/Striatum/Mouse/sc/l5_all.loom",name = "matrix"),sparse = T))
+colnames(data) <-  rhdf5::h5read("/Users/juliafoyer/ST/Striatum/Mouse/sc/l5_all.loom",name = "col_attrs/CellID")
+rownames(data) <- h5read("/Users/juliafoyer/ST/Striatum/Mouse/sc/l5_all.loom", name = "row_attrs/Gene")
+```
+
+
+### Save the sc annotation file
+
+```{r}
+# annotation <- h5read("/Users/juliafoyer/ST/Striatum/Mouse/sc/l5_all.loom", name = "col_attrs")
+# 
+# # Okay, so these two are the same. I will go for this level of annotation, mainly since it has the microglia.
+# # sum(annotation$TaxonomyRank4 != annotation$Taxonomy_group)
+# 
+# cell_ids <- annotation$CellID
+# sum(cell_ids != colnames(data)) # The same
+# annotation <- as.data.frame(annotation$TaxonomyRank4)
+# rownames(annotation) <- cell_ids # Not working because some cell IDs are occurring more than once.
+
+```
+
+Checking if there are any duplicates here
+
+```{r}
+n_occur <- data.frame(table(colnames(data)))
+n_occur[n_occur$Freq > 1,] # Why are some cells listed twice???
+dim(n_occur[n_occur$Freq > 1,]) # 118 cells
+doublets <- n_occur[n_occur$Freq > 1,]$Var1
+# Get indices
+indices <- which(colnames(data) %in% doublets)
+length(indices)
+```
+
+Prepare the annotation and remove these 118 cells (x 2)
+
+```{r}
+annotation <- h5read("/Users/juliafoyer/ST/Striatum/Mouse/sc/l5_all.loom", name = "col_attrs")
+md_df <- data.frame(matrix(ncol = 3, nrow = length(colnames(data))))
+md_df$X1 <- annotation$TaxonomyRank4
+md_df$X2 <- annotation$ClusterName
+
+md_df <- md_df[-c(indices),]
+data <- data[,-c(indices)]
+```
+
+Our goal is to deconvolve the main cell types present in the brain, with a focus on dopaminergic neurons. For this reason we decided to use the Taxonomy rank 4 provided by the dataset for most of the cell types. For the dopaminergic neurons instead we decided to increase the granularity slightly more, using the Cluster name together with the taxonomy rank 4. The following chunk of code adds the cluster name to the taxonomy rank 4 name to the cell types that belong to dopaminergic neurons.
+
+```{r}
+unique(annotation$ClusterName)
+subtypes <- c("MSN1", "MSN2", "MSN3", "MSN4", "MSN5", "MSN6", "OBDOP1", "OBDOP2", "MBDOP1", "MBDOP2")
+
+for (i in 1:length(md_df$X2)){
+  if (md_df$X2[i] %in% subtypes){
+    md_df$X3[i] <- paste0(md_df$X1[i], " ", md_df$X2[i])
+  }
+  else{
+    md_df$X3[i] <- md_df$X1[i]
+  }
+}
+
+unique(md_df$X3)
+```
+
+```{r}
+
+annotation <- data.frame(md_df[,3])
+colnames(annotation) <- "bio_celltype"
+cell_ids <- colnames(data)
+rownames(annotation) <- cell_ids
+
+file <- "/Users/juliafoyer/ST/Striatum/Mouse/stereoscope_221026/striatum_mouse_sc_annotation.tsv"
+fwrite(annotation, row.names = TRUE, file = file, sep = "\t")
+```
+
+### Create a list for the 5000 most highly variable genes
+
+```{r}
+
+data <- CreateSeuratObject(counts = data)
+
+data <- FindVariableFeatures(object = data,
+                             nfeatures = 5000)
+
+length(data@assays$RNA@var.features)
+var.features <- data@assays$RNA@var.features
+write.table(x = var.features, file = "/Users/juliafoyer/ST/Striatum/Mouse/stereoscope_221026/striatum_mouse_sc_var.features.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+```
+
+
+### Save the count matrix
+
+```{r}
+
+counts <- data@assays$RNA@counts
+
+file <- "/Users/juliafoyer/ST/Striatum/Mouse/stereoscope_221026/striatum_mouse_sc_cnt_data.tsv"
+
+counts_dense <- t(as.matrix(counts[,1:20000]))
+write.table(counts_dense, file = file, sep = "\t", row.names = T, quote = F)
+
+counts_dense <- t(as.matrix(counts[,20001:40000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(counts[,40001:60000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(counts[,60001:80000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(counts[,80001:100000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(counts[,100001:120000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(counts[,120001:140000]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+
+counts_dense <- t(as.matrix(counts[,140001:160560]))
+write.table(counts_dense, file = file, sep = "\t", append=TRUE, row.names = T, quote = F, col.names = F)
+```
+
+You can now use the striatum_mouse_sc_cnt_data.tsv, striatum_mouse_sc_var.features.txt, striatum_mouse_sc_annotation.tsv and striatum_mouse_ST_cnt_data.tsv to run stereoscope. To do it follow the instructions proided in the github repo: https://github.com/almaan/stereoscope
+We reported the parameters used to run stereoscope in the methods section of the paper: "50000 epochs were used for both single cell and spatial transcriptomics data, and the batch sizes were set to 2048. Single cell data was subsetted to a maximum of 1000 cells per cell type, using the --sc_upper_bound option."
+

@@ -1,0 +1,378 @@
+---
+title: "Human Striatum cell type deconvolution using Kamath dataseta"
+author: "M. Vicari marco.vicari@scilifelab.se"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    theme: cosmo
+    highlight: tango
+    code_folding: "hide"
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: false
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-- Load libraries -->
+```{r}
+
+library(STutility)
+library(Matrix)
+library(RColorBrewer)
+library(dplyr)
+library(harmony)
+library(patchwork)
+library(data.table)
+library(svglite)
+
+```
+
+<!-- Clean environment and reload project variables -->
+```{r message=FALSE, warning=FALSE}
+
+project.dir <- "/home/marco.vicari/projects/sma_final_sub_230729/sma"
+data.dir <- paste0(project.dir, "/data")
+plots.dir <- paste0(project.dir, "/results/plots")
+tables.dir <- paste0(project.dir, "/results/tables")
+
+```
+
+# Preparing ST data
+<!-- Upload object -->
+```{r eval=FALSE}
+
+se.all <- readRDS(paste0(project.dir, "/R_objects/allRNA_10xFFBM_STUF"))
+se <- SubsetSTData(se.all, expression = Condition == "hPD" & Data.Type == "RNA")
+
+```
+
+<!-- Save ST table that will be used to run stereoscope -->
+```{r eval=FALSE}
+
+ST_counts <- se@assays$RNA@counts
+file <- paste0(project.dir, "/data/stereoscope/human_NAc_tran_ST_cnt_data.tsv")
+counts_dense <- t(as.matrix(ST_counts))
+write.table(counts_dense, file = file, sep = "\t", row.names = T, quote = F)
+
+```
+
+# Preparing Kamath dataset
+
+The dataset that we chose for deconvolving the ST data is the one published in Kamath et al. 2021 (https://www.nature.com/articles/s41593-022-01061-1). You can download the dataset from here: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE178265. This dataset contains single nuclei RNAseq data from human post-mortem samples.
+The matrix of this dataset is pretty big so I had to run it on a server at least to subset the data only for the ones coming from the caudate nucleus (there are many samples from substantia nigra). I recommend that you do the same because the next chunk of code can be pretty computationally intensive.
+
+```{r eval=FALSE}
+
+matrix_dir = "./" # Put here the path of the directory where you stored the barcodes.tsv.gz, features.tsv.gz and matrix.mtx.gz downloaded from GEO
+barcode.path <- paste0(matrix_dir, "barcodes.tsv.gz")
+features.path <- paste0(matrix_dir, "features.tsv.gz")
+matrix.path <- paste0(matrix_dir, "matrix.mtx.gz")
+mat <- readMM(file = matrix.path)
+feature.names = read.delim(features.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+barcode.names = read.delim(barcode.path,
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+colnames(mat) = barcode.names$V1
+rownames(mat) = feature.names$V1
+
+MacHumanAll <- CreateSeuratObject(mat, project = "sma")
+saveRDS(MacHumanAll, file = "./MacHumanAll")
+PDCNnames <- colnames(MacHumanAll)[grepl("^pPDCN", colnames(MacHumanAll))]
+MacHumanPDCN <- MacHumanAll[,PDCNnames]
+saveRDS(MacHumanPDCN, file = "./MacHumanPDCN")
+
+```
+
+## Uploading Kamath dataset
+Upload now the dataset we saved in the previous chunk. It's still heavy, so we will downsample it in a moment.
+```{r eval=FALSE}
+
+scCN <- readRDS(paste0(project.dir, "/R_objects/MacHumanPDCN"))
+
+```
+
+## Add metadata from GSEO. 
+The metadata is available as single pages on the GSEO rep for this dataset. So you have to go through each and every sample to know the origin of it. I will discard the sample pPDCN5730NeuN22119 because it says tissue type SNpc instead of caudate nucleus in the 'tissue' field of the metadata, even though it says "Human caudate nucleus" in the 'source' field. It may just be a typo but to be sure is best that I discard it. There are other 7 donors in the dataset anyways.
+```{r eval=FALSE}
+
+sccn <- subset(scCN, subset = orig.ident == "pPDCN5730NeuN22119", invert=T)
+unique(sccn$orig.ident)
+rm(scCN)
+
+```
+
+## Data QC plots
+Since the matrices uploaded to GEO are the full output of the DropSeq protocol, I will do some QC to avoid using low quality nuclei for the deconvolution.
+```{r eval=FALSE}
+
+sccn[["percent.mt"]] <- PercentageFeatureSet(sccn, pattern = "^MT-")
+Idents(sccn) <- sccn$orig.ident
+VlnPlot(sccn, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3) 
+
+```
+
+## Data filtering
+```{r fig.width=2*3, fig.height=2, eval=FALSE}
+
+p1 <- VlnPlot(sccn, features = "nFeature_RNA") & 
+  geom_hline(yintercept = c(1000)) & 
+  geom_hline(yintercept = c(10000)) & 
+  theme(legend.position = "none")
+p2 <- VlnPlot(sccn, features = "nCount_RNA") & geom_hline(yintercept = 50000) & theme(legend.position = "none")
+p3 <- VlnPlot(sccn, features = "percent.mt") & geom_hline(yintercept = 7) & theme(legend.position = "none")
+wrap_plots(p1, p2, p3, ncol = 3)
+
+```
+
+<!-- Apply filters -->
+```{r eval=FALSE}
+
+sccnf <- subset(sccn, subset = nFeature_RNA > 1000 & nFeature_RNA < 10000 & nCount_RNA < 50000 & percent.mt < 7)
+VlnPlot(sccnf, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+```
+
+## Downsample 4k nuclei per donor 
+Here we will downsample 4000 nuclei per donor (21000 nuclei in total, to speed up the analysis. From this step on it should be fine to run it locally. Since stereoscope uses a downsampling of the data of a maximum of 250 nuclei per cell type, this won't affect downstream results. 
+
+```{r eval=FALSE}
+
+Idents(sccnf) <- sccnf$orig.ident
+sccnfd <- subset(sccnf, downsample = 4000)
+sccnfd
+
+```
+
+## Seurat Vanilla analysis first steps
+```{r eval=FALSE}
+
+sccnfd <- sccnfd %>% 
+  SCTransform() %>%
+  RunPCA() %>% 
+  RunHarmony(assay.use = "SCT", reduction = "pca", group.by.vars = "orig.ident",
+                     reduction.save = "harmony", verbose = F) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30, verbose = F) %>%
+  RunUMAP(reduction = "harmony", dims = 1:30, verbose = F)
+
+```
+
+## Save downsampled object
+This object is made available to the reader at the path /sma/data/misc/MacHumanPDCNFiltDown21kAnStsc.rds
+```{r eval=FALSE}
+
+saveRDS(sccnfd, paste0(project.dir, "/R_objects/MacHumanPDCNFiltDown21kAnStsc.rds"))
+
+```
+
+## Annotation
+The downside of using this dataset is that it is not annotated yet. In order to run stereoscope in a meaningful way first we applied some annotation to this dataset. Please note that this annotation is not a rigorous one, rather a putative annotation based on some already known marker genes. 
+
+<!-- Upload object -->
+```{r eval=TRUE}
+
+sccnfd <- readRDS("/home/marco.vicari/projects/sma/R_objects/MacHumanPDCNFiltDown21kAnStsc.rds")
+
+```
+
+## Manual annotation based on findings from Tran dataset. 
+We based our annotation on the marker genes reported in the following paper by Tran et al. 2021 (https://www.cell.com/neuron/fulltext/S0896-6273(21)00655-3?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS0896627321006553%3Fshowall%3Dtrue). Of note, this dataset doesn't contain caudate nucleus samples, but it studies in detail the dopaminergic neurons. 
+
+### General markers
+From the Tran paper: "Of the 10 distinct neuronal clusters expressing established D1- and D2- MSNs markers (Figure 1B), including PPP1R1B (encoding DARPP-32), six of these MSN subclusters were enriched for DRD1 (D1_A–D1_F) and four were enriched for DRD2 (D2_A– D2_D). These MSN subclusters collectively made up between 85% and 95% of neuronal nuclei from the neuron-enriched samples
+(Table S3), lending human evidence that, similar to the rodent,the vast majority of nuclei in this region of the striatum are composed of MSNs (Kawaguchi, 1997). Clusters D1_A and D2_A represented the largest D1-MSN (67%) and D2-MSN (87%) subclasses, respectively. As expected, MSN subclusters showed differential enrichment of several neuropeptides, including proenkephalin (PENK), tachykinin 1 (TAC1), and prodynorphin (PDYN) (Figure S1) (Lobo, 2009; Lobo et al., 2006; Savell
+et al., 2020). Surprisingly, the classical D1-MSN marker, TAC1, was enriched in D2_C MSNs, while it was largely absent in the smaller D1_B, D1_C, and D1_F MSNs (Figure 1B). Similarly, the classical D2-MSN marker PENK was enriched in the large
+population of D2_A MSNs, in addition to D2_B and D2_D, but depleted in the smaller population of D2_C MSNs (Figure S1).
+```{r}
+
+FeaturePlot(sccnfd, features = c("PPP1R1B", "DRD1", "DRD2", "PENK", "TAC1", "PDYN"
+                                 ), ncol = 3)
+
+```
+Projecting those markers in the Kamath dataset we can easily see which are the MSN neurons (most of them are PPP1R1B+), and clearly distinguish between D1 (DRD1+) and D2 (DRD2+). PENK and TAC one expression is at the same time meaningful and hetherogeneous also in this dataset: you can clearly see that PENK prefers to localize with D2 MSNs, while TAC1 with D1 MSNs, but at the same time they are not expressed in all the nuclei of these subclasses.
+
+### MSN D1 specific markers
+From the Tran paper: "Using differential expression analyses, we identified the most preferentially expressed genes in each MSN class and found tens to hundreds of unique markers for D1- and D2-MSN classes (at false discovery rate [FDR] <1e-6; Table S5). Among D1- MSNs, three classes (D1_B, D1_E, and D1_F) were enriched for the relaxin family peptide receptor 1, RXFP1, but only the TAC1neg D1_F MSNs were enriched for the GABAA receptor subunit, GABRQ, and the relaxin family peptide receptor 1, RXFP1 (Figures 1C and S2). Similarly, only D1_E MSNs expressed substantial levels of CRHR2, encoding corticotropin-releasing hormone receptor 2, a protein implicated in mediating the response to stress in the brain (Figure 1D). The TAC1neg D1_C MSNs could be distinguished from all other MSN classes by the elevated expression of relaxin family peptide receptor 2, RXFP2, and the depletion of both RXFP1 and GABRQ (Figure S2), although this small class of D1 MSNs was difficult to identify via smFISH. [...] Several other genes, including CASZ1, GPR6, and EBF1, were differentially expressed in unique D1- and/or D2- MSN classes (Figure S4). CASZ1 was highly enriched in the D1_B, D1_E, and D2_C classes, GPR6 in all D2 classes, and EBF1 in the D1_C class." (N.B. GABAA not found in this dataset)
+ 
+```{r}
+
+FeaturePlot(sccnfd, features = c("RXFP1", #D1_B, D1_E, and D1_F out of all D1
+                                 "GABAA", "GABRQ", "TAC1", # D1_F out of all D1. They are also TAC neg
+                                 "CRHR2", # only D1_E out of all D1
+                                 "TAC1", "RXFP2", "GABRQ", "RXFP1", "EBF1",  # D1_C are Tac1 neg, RXFP2 pos, RXFP1 depleted
+                                 "SNAP25", "SLC17A7", "CAMK2A"
+                                 ), ncol = 4)
+
+```
+
+No detection of GABAA and very scattered detection of GABRQ suggests that D1_F population is absent in caudate nucleus. This is consistent with mouse data were only 1 population of MSN D1 out of 3 is present in the dorsal striatum, whereas the other 2 are located in the ventral one. Same for D1_E (CRHR2 not detected among the D1 MSNs). D1_C markers are also not detected, with the exception of EBF1. Maybe only D1_A cells are present in the caudate. Overall these markers are not really helpful in this dataset to understand the MSN subpopulations present here.
+
+### MSN D2 specific markers
+From the Tran paper: "Consistent with the identification of a discrete D2-MSN class expressing Htr7 in the mouse striatum (Gokce et al., 2016; Stanley et al., 2020), we identified the enrichment of HTR7 in D2_C (TAC1+; PENK neg) MSNs, but not other classes of D2 MSNs (Figure S3). Similar to D1_E MSNs, the HTR7+ D2_C cluster was the only D2-MSN class expressing CRHR2, although to a lesser degree. [...] Several other genes, including CASZ1, GPR6, and EBF1, were differentially expressed in unique D1- and/or D2- MSN classes (Figure S4). CASZ1 was highly enriched in the D1_B, D1_E, and D2_C classes, GPR6 in all D2 classes, and EBF1 in the D1_C class."
+
+```{r}
+
+FeaturePlot(sccnfd, 
+            features = c( "HTR7", "TAC1", "PENK", "CRHR2", "CASZ1", #D2_C are HTR7 positive, TAC1+, PENK-, CRHR2+/-, CASZ1+
+                          "GPR6 ", "DRD2" #enriched in all D2 classes
+                          ), ncol = 3)
+
+```
+GPR6 is not detected in this dataset. Based on TAC1 and DRD2 expression we can assume that the small cluster below the D1 cells are the D2_C cells.
+
+### General markers other cells
+Based on the expression of the following markers we should be able to distinguish the main cell types (reported as comments in the chunk)
+```{r}
+
+FeaturePlot(sccnfd, 
+            features = c( "MBP", # Oligodendrocytes A and B, OPC_COP. OPC are also MBP +/- 
+                          "PDGFRA", "VCAN", # OPC are also PDGFRA +/-
+                          "AQP4", #Astrocytes A and B.
+                          "CD74", "CD163" # Microglia, Microglia resting and macrophages
+                          ), ncol = 3)
+
+```
+Those markers are quite clear. Maybe only the OPCs and OPC_COP is not clear where they are, since PDGFRA localizes in a cloud that seems to be MBP completely negative. But VCAN confirms OPCs.
+
+# Clustering 
+<!-- DimPlot -->
+```{r}
+
+sccnfd <- FindClusters(sccnfd, resolution = 0.6)
+# p1 <- DimPlot(sccnfd, group.by = "seurat_clusters", label = T)
+# p2 <- DimPlot(sccnfd, group.by = "predicted.id", label = T)
+# p1-p2
+DimPlot(sccnfd, group.by = "seurat_clusters", label = T)
+
+```
+Here it's difficult to pick the right resolution. Penk and Tac1 uneven expression inside the main MSN clusters suggest that there is still some heterogeneity inside, so we will stick to the minimal resolution to leave at least 2 clusters inside each of them, which is 0.6. It leaves us with 2 MSN.D2 main clusters and 3 MSN.D1. 23 clusters in total. Small and very distinct additional MSN clusters are also present.
+
+Based on the analysis performed so far, we decided to apply the following labels to the clusters:
+5 - 5_MSN.D2.Penk-
+2 - 2_MSN.D2.Penk+
+3 - 3_MSN.D1.Tac-
+9 - 9_MSN.D1.Tac+A
+6 - 3_MSN.D1.Tac+B
+18 - 18_MSN.D2_C
+8 - 8_Mi.MiR.Ma
+1 - 1_Oligo
+4 - 4_Oligo
+7 - 7_OPC
+21 - 21_Oligo
+12 - 12_Inhib_MSN
+13 - 13_Inhib
+0 - 0_Astro
+10 - 10_Astro
+11 - 11_Astro
+17 - 17_Astro
+14 - 14_unk
+15 - 15_unk (Astro_A)
+16 - 16_unk
+22 - 22_unk
+15 - 15_unk
+
+I will run stereoscope using these clusters and the sccnfd object.
+
+# Heatmap
+
+```{r message=F, warning=F, eval=FALSE}
+
+allmarkers <- FindAllMarkers(sccnfd, only.pos = T)
+write.csv(allmarkers, file = paste0(project.dir, "/results/tables/Allmarkers_Kamath_default.csv"))
+
+```
+
+I will the clusters in the allmarkers table to help read the heatmap
+```{r}
+unique(allmarkers$cluster)
+sek@meta.data <- sek@meta.data %>% rename("5_MSN.D2.Penk-" = "X5",
+                                        "2_MSN.D2.Penk+" = "X2",
+                                        "3_MSN.D1.Tac-" = "X3",
+                                        "9_MSN.D1.Tac+A" = "X9",
+                                        "6_MSN.D1.Tac+B" = "X6",
+                                         "18_MSN.D2_C" = "X18",
+                                        "8_Mi.MiR.Ma" = "X8",
+                                        "1_Oligo" = "X1",
+                                        "4_Oligo" = "X4",
+                                        "7_OPC" = "X7",
+                                        "20_OPC" = "X20",
+                                         "21_Oligo" = "X21",
+                                         "12_Inhib_MSN" = "X12",
+                                         "13_Inhib" = "X13",
+                                        "0_Astro" = "X0",
+                                         "10_Astro" = "X10",
+                                         "11_Astro" = "X11",
+                                         "17_Astro" = "X17",
+                                         "14_unk" = "X14",
+                                         "15_unk" = "X15",
+                                         "16_unk" = "X16",
+                                         "22_unk" = "X22",
+                                         "15_unk" = "X15"
+                                        )
+
+```
+
+# DotPlot
+## Jpeg
+```{r message=F, warning=F}
+
+allmarkers <- read.csv(file =  paste0(project.dir, "/results/tables/Allmarkers_Kamath_default.csv"), header = T, row.names = 1)
+
+allmarkersF <- allmarkers %>%
+  filter(avg_log2FC > 0.25) %>%
+  filter(p_val_adj < 0.01)
+
+top5 <- allmarkersF %>%
+  group_by(cluster) %>%
+  top_n(wt = avg_log2FC, n = 5)
+
+clusters.cols <- pal
+names(clusters.cols) <- unique(se$seurat_clusters) 
+
+# Export plot as JPEG
+DotPlot(sccnfd, features = unique(top5$gene), col.min = 0, dot.min = 0, cols= clusters.cols, group.by = "seurat_clusters", split.by = "seurat_clusters", dot.scale = 3) + xlab('Marker genes')+ ylab('Samples') + theme(text = element_text(size = 10), axis.text.x=element_text(size=6, angle = 30, hjust = 1),axis.text.y=element_text(size=5), legend.direction="horizontal", legend.position = "top")
+
+DimPlot(sccnfd, group.by = "seurat_clusters", label = T, cols = clusters.cols)
+
+
+```
+
+
+# Export matrices for stereoscope
+```{r eval=FALSE}
+
+DefaultAssay(sccnfd) <- "RNA"
+sccnfd <- FindVariableFeatures(object = sccnfd, nfeatures = 5000)
+length(sccnfd@assays$RNA@var.features)
+var.features <- sccnfd@assays$RNA@var.features
+sum(var.features %in% c("PENK","TAC1","CARTPT", "DRD1", "DRD2"), na.rm = TRUE)
+write.table(x = var.features, file = paste0(project.dir, "/data/stereoscope/human_CN_Kamath_varfeat.txt") , quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+counts <- sccnfd@assays$RNA@counts
+file <- paste0(project.dir, "/data/stereoscope/human_CN_Kamath_sc_cnt_data.tsv")
+counts_dense <- t(as.matrix(counts))
+write.table(counts_dense, file = file, sep = "\t", row.names = T, quote = F)
+
+annotation <- sccnfd@meta.data
+file <- paste0(project.dir, "/data/stereoscope/human_CN_Kamath_sc_annotation.tsv")
+fwrite(annotation, row.names = TRUE, file = file, sep = "\t")
+
+levels(Idents(sccnfd))
+
+```
+
+# Save Seurat object used for stereoscope
+```{r eval=FALSE}
+
+saveRDS(sccnfd, paste0(project.dir, "/R_objects/MacHumanPDCNFiltDown21kAnStsc.rds"))
+
+```
+
+Now you should have everything needed to run stereoscope. To run it follow the installation instructions on the github repo: https://github.com/almaan/stereoscope
+In case you didn't manage to follow the single nuclei part of the script because too computationally intensive we provide the 21k nuclei dataset as RDS object and the tsv files used to run stereoscope (human_CN_Kamath_sc_annotation.tsv) in the /sma/data/misc folder. The commmand that we used to run stereoscope is the following:
+
+stereoscope run --sc_cnt ./human_CN_Kamath_sc_cnt_data.tsv --sc_labels ./human_CN_Kamath_sc_annotation.tsv -sce 75000  -o ./outs --st_cnt ./human_NAc_tran_ST_cnt_data.tsv -ste 75000 --gpu -stb 100 -scb 100 -sub 250 -slb 25 -gl ./human_CN_Kamath_varfeat.txt -lcn seurat_clusters

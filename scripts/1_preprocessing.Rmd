@@ -1,0 +1,901 @@
+---
+title: "preprocessing"
+author: "M. Vicari marco.vicari@scilifelab.se"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    theme: cosmo
+    highlight: tango
+    css: style.css
+    code_folding: "hide"
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: false
+editor_options: 
+  chunk_output_type: console
+---
+
+In this script we will: 
+- upload all the Spatial Transcriptomics data used in the paper; 
+- save corresponding R objects
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+Set-upLoad libraries
+```{r message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(STutility)
+library(stringr)
+library(data.table)
+library(harmony)
+# library(magrittr)
+# library(knitr)
+
+```
+
+Set-up directories and system variables
+```{r message=FALSE, warning=FALSE}
+
+project.dir <- "/home/marco.vicari/projects/sma_final_sub_230729/sma"
+data.dir <- paste0(project.dir, "/data")
+dir.create(paste0(project.dir, "/results"))
+dir.create(paste0(project.dir, "/results/plots"))
+plots.dir <- paste0(project.dir, "/results/plots")
+dir.create(paste0(project.dir, "/results/tables"))
+tables.dir <- paste0(project.dir, "/results/tables")
+dir.create(paste0(project.dir, "/R_objects"))
+
+matrix.cols <- c("DHB" = "darkolivegreen3",
+                 "9AA" = "gold",
+                 "ctrl" = "darkgrey",
+                 "FMP10" = "purple")
+
+```
+
+# Filtered data
+In the following part of the script we will:
+- upload the 10x filtered barcode matrix
+- add the annotations done with cloupe to the R object
+- produce QC plots needed to choose the parameters to use for filtering
+- save the r object
+
+## Load filtered data
+```{r message=FALSE, warning=FALSE}
+
+use <- read.table(paste0(data.dir, "/metadata.csv"), sep=",", header=T, stringsAsFactors = F)
+use <- use %>%
+  dplyr::filter(Data.Type == "RNA") %>%
+  dplyr::mutate(samples = paste0(data.dir, Path.To.File, "/filtered_feature_bc_matrix.h5"),
+                spotfiles = paste0(data.dir, Path.To.File, "/spatial/tissue_positions_list.csv"),
+                imgs = paste0(data.dir, Path.To.File, "/spatial/tissue_hires_image.png"),
+                json = paste0(data.dir, Path.To.File,  "/spatial/scalefactors_json.json"))
+
+# Loading the data without filtering anything
+se <- InputFromTable(infotable = use,
+                     disable.subset = TRUE,
+                     verbose = TRUE) %>%
+  LoadImages(time.resolve = FALSE)
+
+# Add additional meta data columns
+se$Prot.Short <- se[[]] %>%
+  dplyr::mutate(Prot.Short = dplyr::case_when(Protocol == "Sma" ~ "Sma",
+                                              Protocol == "Visium" ~ "V",
+                                              Protocol == "Visium_iCtrl" ~ "iCtrl",
+                                              TRUE ~ Protocol)) %>%
+  dplyr::pull(Prot.Short)
+se$section_number <- GetStaffli(se)@meta.data$sample
+se$type <- paste(se$Prot.Short, se$Matrix, se$sample, se$section_number, sep = ".") 
+se$type.area <- paste(se$Prot.Short, se$Matrix, se$sample, se$Brain.area, se$section_number, sep = ".") 
+
+```
+
+## Add metadata produced with cloupe
+```{r}
+
+# List lesion annotation files
+lesionFN <- list.files(path = data.dir, pattern = "lesion.csv", full.names = T, recursive = T)
+
+# Load lesion annotations
+lesion <- do.call(rbind, lapply(lesionFN , function(f) {
+  folder <- strsplit(f, "/") %>% unlist()
+  smplID <- folder[length(folder) - 2] %>% substr(1, 13)
+  suffix <- unique(se@meta.data$section_number[se@meta.data$Sample.ID == smplID])
+  if (length(suffix) == 0) {
+    print(paste0("sample '", smplID, "' not in Seurat object"))
+    return(NULL)
+  } else {
+    toAdd <- read.csv(f) %>%
+      dplyr::mutate(Barcode = paste0(Barcode, "_", suffix)) %>%
+      dplyr::filter(lesion != "") %>%
+      tibble::column_to_rownames(var = "Barcode")
+    return(toAdd)
+  }
+}))
+
+# List region annotation files
+regionFN <- list.files(path = data.dir, pattern = "region.csv", full.names = T, recursive = T)
+
+# Load region annotations
+region <- do.call(rbind, lapply(regionFN , function(f) {
+  folder <- strsplit(f, "/") %>% unlist()
+  smplID <- folder[length(folder) - 2] %>% substr(1, 13)
+  suffix <- unique(se@meta.data$section_number[se@meta.data$Sample.ID == smplID])
+  if (length(suffix) == 0) {
+    print(paste0("sample '", smplID, "' not in Seurat object"))
+    return(NULL)
+  } else {
+    toAdd <- read.csv(f) %>%
+      dplyr::mutate(Barcode = paste0(Barcode, "_", suffix)) %>%
+      dplyr::filter(region != "") %>%
+      tibble::column_to_rownames(var = "Barcode")
+    return(toAdd)
+  }
+}))
+
+# Adding metadata produced with cloupe
+dopamineFN <- list.files(path = data.dir, pattern = "dopamine.csv", full.names = T, recursive = T)
+
+# Load dopamine annotations
+dopamine <- do.call(rbind, lapply(dopamineFN , function(f) {
+  folder <- strsplit(f, "/") %>% unlist()
+  smplID <- folder[length(folder) - 2] %>% substr(1, 13)
+  suffix <- unique(se@meta.data$section_number[se@meta.data$Sample.ID == smplID])
+  if (length(suffix) == 0) {
+    print(paste0("sample '", smplID, "' not in Seurat object"))
+    return(NULL)
+  } else {
+    toAdd <- read.csv(f) %>%
+      dplyr::mutate(Barcode = paste0(Barcode, "_", suffix)) %>%
+      dplyr::filter(dopamine != "") %>%
+      tibble::column_to_rownames(var = "Barcode")
+    return(toAdd)
+  }
+}))
+
+# This is the annotation of the anatomical regions that I did in Loupe. The labels and the regions are taken from the Allen Mouse Brain Atlas.
+RegionLoupeFN <- list.files(path = data.dir, pattern = "RegionLoupe.csv", full.names = T, recursive = T)
+
+# Load region annotations
+RegionLoupe <- do.call(rbind, lapply(RegionLoupeFN , function(f) {
+  folder <- strsplit(f, "/") %>% unlist()
+  smplID <- folder[length(folder) - 2] %>% substr(1, 13)
+  suffix <- unique(se@meta.data$section_number[se@meta.data$Sample.ID == smplID])
+  if (length(suffix) == 0) {
+    print(paste0("sample '", smplID, "' not in Seurat object"))
+    return(NULL)
+  } else {
+    toAdd <- read.csv(f) %>%
+      dplyr::mutate(Barcode = paste0(Barcode, "_", suffix)) %>%
+      dplyr::filter(RegionLoupe != "") %>%
+      tibble::column_to_rownames(var = "Barcode")
+    return(toAdd)
+  }
+}))
+
+se <- AddMetaData(se, metadata = lesion)
+se <- AddMetaData(se, metadata = region)
+se <- AddMetaData(se, metadata = dopamine)
+se <- AddMetaData(se, metadata = RegionLoupe)
+
+```
+
+<!-- Plotting Region Loupe Annotation -->
+RegionLoupe has a typo for Striatum sections. the same regions has been named differently in different sections. I will apply Allen Brain nomenclature to all of them.
+```{r message=F, warning=F, eval=FALSE}
+
+levels(as.factor(se$RegionLoupe))
+se$RegionLoupe[se$RegionLoupe == "PAL"] <- "MSC"
+se$RegionLoupe[se$RegionLoupe == "VTA-SNpc"] <- "VTA-SNc"
+levels(as.factor(se$RegionLoupe))
+
+```
+
+## Check diffusion on filtered data nFeature_RNA
+```{r}
+
+plots <- lapply(unique(se$section_number), function(i) {
+  gg <- cbind(se[[]], GetStaffli(se)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = nFeature_RNA)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "Unique\ngenes") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+## nFeature_RNA distribution of all samples
+```{r}
+
+p <- se[[]] %>%
+  ggplot(aes(nFeature_RNA, fill = Matrix, color = Matrix)) +
+  geom_density(alpha = 0.5, show.legend = FALSE) +
+  facet_wrap(~type.area, ncol = 4) +
+  scale_fill_manual(values = matrix.cols )
+
+p
+
+```
+
+## nFeature_RNA distribution for all samples
+```{r}
+
+ggplot(data = se[[]], aes(nFeature_RNA, fill=type.area, colour=type.area)) +
+  geom_density(alpha = 0) +
+  geom_vline(aes(xintercept = 50), col= "red", size=1)+
+  ggtitle("nFeature_RNA distribution 10x filtered data")
+
+
+```
+
+## Check diffusion on filtered data nCount_RNA
+```{r}
+
+plots <- lapply(unique(se$section_number), function(i) {
+  gg <- cbind(se[[]], GetStaffli(se)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = nCount_RNA)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "UMIs") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+## nFeature_RNA distribution for all samples
+```{r}
+
+ggplot(data = se[[]], aes(nCount_RNA, fill=type.area, colour=type.area)) +
+  geom_density(alpha = 0) +
+  ggtitle("nFeature_RNA distribution 10x filtered data")
+
+```
+
+## Calculate mitochondrial and ribosomal content 
+```{r message=FALSE, warning=FALSE}
+
+# Collect all genes coded on the mitochondrial genome
+mt.genes <- grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+se$percent.mito <- (Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+
+# Collect all genes coding for ribosomal proteins
+rp.genes <- grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE)
+se$percent.ribo <- (Matrix::colSums(se@assays$RNA@counts[rp.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+
+```
+
+## Samplewise Mitochondrial content Feature plot
+```{r}
+
+plots <- lapply(unique(se$section_number), function(i) {
+  gg <- cbind(se[[]], GetStaffli(se)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = percent.mito)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "percent\nmitochondrial") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds"), labels = scales::percent) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+## Mitochondrial content Distribution
+```{r}
+
+ggplot(data = se[[]], aes(percent.mito, fill=Matrix, colour=Matrix)) +
+  geom_density(alpha = 0) +
+  geom_vline(aes(xintercept = 38), col= "red", size=1)+
+  scale_fill_manual(values = matrix.cols )+
+  ggtitle("% of mitochondrial per spot (10x filtered data) and 38% threshold")
+
+```
+
+## Ribosomal content feature plot samplewise
+```{r}
+
+plots <- lapply(unique(se$section_number), function(i) {
+  gg <- cbind(se[[]], GetStaffli(se)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = percent.ribo)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "percent\nribosomal") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds"), labels = scales::percent) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+## Ribosomal protein coding genes distribution
+```{r}
+
+ggplot(data = se[[]], aes(percent.ribo, fill=Matrix, colour=Matrix)) +
+  geom_density(alpha = 0) +
+  geom_vline(aes(xintercept = 18), col= "red", size=1)+
+  # scale_color_manual(values = matrix.cols)+
+  scale_fill_manual(values = matrix.cols )+
+  ggtitle("% of ribosomal protein coding genes per spot (10x filtered data) and 18% threshold")
+
+```
+
+## Stereoscope results
+```{r}
+
+m_stsc <- read.csv(file=paste0(data.dir, "/misc/Zeisel_stsc_output.csv"), header = T, row.names = 1)
+se <- AddMetaData(se, metadata = m_stsc)
+
+```
+
+## Save 10x filtered data R object before additional filtering. 
+10xFFBM means that I am using 10x filtered featured barcode matrix. STUnF means that I have not applied yet the filters mentioned above using ST utility.
+```{r message=FALSE, warning=FALSE}
+
+saveRDS(se, file = paste0(project.dir, "/R_objects/allRNA_10xFFBM_STUnF"))
+
+```
+
+
+# Filtered data Striatum
+We will create another object that will contain only mouse striatum data. This object will be used only for the technical analysis. It uses filtered 10x bc matrix but has no additional STUtility filter.
+```{r message=FALSE, warning=FALSE}
+
+md <- read.table(paste0(data.dir, "/metadata.csv"), sep=",", header=T, stringsAsFactors = F)
+use1 <- md[md$Brain.area %like% "Striatum", ] # retaining only one brain area
+use1 <- use1[use1$Condition %like% "mPD", ] # retaining only biological condition of interest
+use1 <- use1[use1$Data.Type %like% "RNA", ] # we start analyzing RNA data
+use1 <- use1[!use1$Protocol %like% "Msi", ] # we exclude MSI data
+
+# switch to common name
+use <- use1
+use$samples <- paste0(data.dir, use$Path.To.File, "/filtered_feature_bc_matrix.h5")
+use$spotfiles <- paste0(data.dir, use$Path.To.File, "/spatial/tissue_positions_list.csv")
+use$imgs <- paste0(data.dir, use$Path.To.File, "/spatial/tissue_hires_image.png")
+use$json <- paste0(data.dir, use$Path.To.File,  "/spatial/scalefactors_json.json")
+
+# Loading the data without filtering anything
+se <- InputFromTable(infotable = use,
+                      minUMICountsPerGene = 0,
+                      minSpotsPerGene = 0,
+                      minUMICountsPerSpot = 0,
+                      minGenesPerSpot = 0,
+                        platform="Visium"
+                     )
+
+se <- LoadImages(se, time.resolve = FALSE)
+
+```
+
+## Add type column and set colors
+
+```{r warning=FALSE, message=FALSE}
+
+#Set type column
+se$Prot.Short <- se$Protocol
+se$Prot.Short[se$Prot.Short == "Sma"] <- "Sma"
+se$Prot.Short[se$Prot.Short == "Visium"] <- "V"
+se$Prot.Short[se$Prot.Short == "Visium_iCtrl"] <- "iCtrl"
+se@meta.data <- transform(se@meta.data, SerNo = as.numeric(factor(Sample.ID)))
+se$type <- paste(se$Prot.Short, se$Matrix, se$sample, se$SerNo, sep = ".") 
+
+```
+
+## Save Seurat object
+```{r message=F, warning=F}
+
+saveRDS(se, file = paste0(project.dir, "/R_objects/mPDStrRNA.10xFFBM.STUnF"))
+
+```
+
+# STUtility filter
+From the methods section of the paper:
+" The filtered count matrices obtained from spaceranger were used in subsequent analysis upon application of  additional filters. In particular, spots below sectioning or mounting artifacts were annotated using Loupe Browser (v 6.3.0) and removed using the “SubsetSTData” function in STUtility; spots that included more than 38% mitochondrial genes or less than 50 unique genes were removed using the same STUtility function; hemoglobin-coding, riboprotein-coding and Malat1 genes were removed from the dataset as well."
+
+In the following part of the script we will do this:
+- upload the object which contains the 10x filtered barcode matrices;
+- apply additional filters with STUtility
+
+## Upload object saved in previous script
+```{r message=FALSE, warning=FALSE}
+
+se <- readRDS(file = paste0(project.dir, "/R_objects/allRNA_10xFFBM_STUnF"))
+
+```
+
+## Get the barcode of spots under morphological artifacts (eg. folds, tissue tears, broken edges)
+```{r message=FALSE, warning=FALSE}
+
+filterFN <- list.files(path = data.dir, pattern = "filter.csv", full.names = T, recursive = T)
+# Adding metadata produced with cloupe
+filter  <- data.frame(matrix(ncol=2, nrow=0))
+colnames(filter) <- c("Barcode", "filter")
+
+for (i in 1:length(filterFN)) {
+  toAdd <- read.csv(filterFN[i])
+  split <- str_split(filterFN, pattern = "/")
+  folder <- split[[i]][length(split[[i]])-2]
+  smplID <- substr(folder, 1, 13)
+  suffix <- levels(as.factor((se@meta.data$section_number[se@meta.data$Sample.ID==smplID])))
+  toAdd$Barcode <- paste0(toAdd$Barcode, "_", as.character(suffix))
+  filter <- rbind(filter, toAdd)
+  }
+
+bc.remove <- filter$Barcode[filter$filter=="remove"]
+bc.keep <- colnames(se)[!colnames(se) %in% bc.remove]
+
+```
+
+## Apply additional filters with STUtility
+We will remove:
+- spots with percentage of mitochondrial genes higher than 38%;
+- spots with number of unique genes per spot lower than 50
+- spots under morphological artifacts
+
+### Filter spots
+```{r message=FALSE, warning=FALSE}
+
+se.F <- SubsetSTData(se, expression = percent.mito < 38 & nFeature_RNA > 50)
+se.F <- SubsetSTData(se.F, spots= bc.keep)
+
+cat("Spots removed: ", ncol(se) - ncol(se.F), "\n")
+
+```
+
+### Filter genes
+```{r message=FALSE, warning=FALSE}
+#' Filter genes: Updated list
+genes_remove <- grep("^Hb|^Rps|^Rpl|^Malat1", x = rownames(se), value = TRUE)
+#' Define genes to keep
+genes_keep <- setdiff(rownames(se.F), genes_remove)
+#' filter genes
+se.F <- se.F[genes_keep, ]
+cat("Number of genes removed : ", nrow(se) - nrow(se.F), "\n")
+
+```
+
+## Repeating QC plots
+### Check diffusion on filtered data nFeature_RNA
+```{r}
+
+plots <- lapply(unique(se.F$section_number), function(i) {
+  gg <- cbind(se.F[[]], GetStaffli(se.F)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = nFeature_RNA)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "Unique\ngenes") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+### Check diffusion on with nCount_RNA after filtering
+```{r}
+
+plots <- lapply(unique(se.F$section_number), function(i) {
+  gg <- cbind(se.F[[]], GetStaffli(se.F)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = nCount_RNA)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "UMIs") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+### Check diffusion on filtered data nCount_RNA
+```{r message=FALSE, warning=FALSE}
+
+plots <- lapply(unique(se.F$section_number), function(i) {
+  ST.FeaturePlot(se.F, features = "nCount_RNA", 
+               value.scale = c("samplewise"),
+               indices = i,
+               cols = c("lightgray", "mistyrose", "red", "dark red", "black"),
+               pt.size = 0.8, label.by = "type.area")
+})
+
+p <- cowplot::plot_grid(plotlist = plots, ncol = 4)
+p
+
+```
+
+### Mitochondrial content feature plot samplewise after filtering
+```{r}
+
+plots <- lapply(unique(se.F$section_number), function(i) {
+  gg <- cbind(se.F[[]], GetStaffli(se.F)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = percent.mito)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "percent\nmitochondrial") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+### Mitochondrial content Distribution after filtering
+```{r message=FALSE, warning=FALSE}
+
+ggplot(data = se.F[[]], aes(percent.mito, fill=Matrix, colour=Matrix)) +
+  geom_density(alpha = 0) +
+  geom_vline(aes(xintercept = 38), col= "red", size=1)+
+  # scale_color_manual(values = matrix.cols)+
+  scale_fill_manual(values = matrix.cols )+
+  ggtitle("% of mitochondrial per spot (10x filtered data) and 38% threshold")
+
+```
+
+### Ribosomal content feature plot samplewise after filtering
+```{r message=FALSE, warning=FALSE}
+
+plots <- lapply(unique(se.F$section_number), function(i) {
+  gg <- cbind(se.F[[]], GetStaffli(se.F)@meta.data[, c("pixel_x", "pixel_y")]) %>%
+    dplyr::filter(section_number == i)
+  plot_title <- unique(gg$type.area)
+  ggplot(gg, aes(pixel_x, pixel_y, color = percent.ribo)) +
+    geom_point() +
+    scale_y_reverse() +
+    labs(title = plot_title, color = "percent\nribosomal") +
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) &
+    theme_void() &
+    theme(legend.position = "bottom",
+          legend.text = element_text(angle = 60, hjust = 1))
+})
+
+p <- patchwork::wrap_plots(plots, ncol = 4)
+p
+
+```
+
+### Ribosomal genes content Distribution after filtering
+```{r message=FALSE, warning=FALSE}
+
+ggplot(data = se.F[[]], aes(percent.ribo, fill=Matrix, colour=Matrix)) +
+  geom_density(alpha = 0) +
+  geom_vline(aes(xintercept = 18), col= "red", size=1)+
+  # scale_color_manual(values = matrix.cols)+
+  scale_fill_manual(values = matrix.cols )+
+  ggtitle("% of ribosomal genes per spot (10x filtered data) and 18% threshold")
+
+```
+
+## Saving filtered object. 10xFFBM means that I am using 10x filtered featured barcode matrix. STUF means that I have applied filters mentioned above using ST utility.
+```{r message=FALSE, warning=FALSE}
+
+saveRDS(se.F, file = paste0(project.dir, "/R_objects/allRNA_10xFFBM_STUF"))
+
+```
+
+# MSI samples
+Here we will upload and save two MSI samples. They will be used just to plot the dopamine profiles for Figgs.2Bii and vii. We will:
+- upload the raw data;
+- do some analysis steps just to detect well the background;
+- filter the background and save them.
+
+## V11L12-109_B1 Striatum
+<!-- Assemble spaceranger output files and MSI output files -->
+```{r message=FALSE, warning=FALSE}
+
+raw <- read.csv(paste0(data.dir, "/sma/V11L12-109/V11L12-109_B1/output_data/V11L12-109_B1_MSI/V11L12-109_B1.Visium.FMP.220826_smamsi.csv"), header=T)
+counts <- raw[,-c(1:2)]
+counts <- log10(counts+1)
+rownames(counts) <- rownames(raw)
+coordinates <- raw[,1:2]
+rownames(coordinates) <- rownames(counts)
+msi109B1 <- CreateSeuratObject(counts = t(counts), assay="Spatial")
+msi109B1@images$image =  new(
+    Class = 'SlideSeq',
+    assay = "Spatial",
+    key = "image_",
+    coordinates = coordinates
+  )
+msi109B1 <- ScaleData(msi109B1)
+msi109B1 <- FindVariableFeatures(msi109B1)
+msi109B1 <- RunPCA(msi109B1, verbose = F)
+msi109B1 <- FindNeighbors(msi109B1, reduction = "pca", dims = 1:30, verbose = F)
+msi109B1 <- RunUMAP(msi109B1, reduction = "pca", dims = 1:30, verbose = F)
+
+```
+
+Plotting the Spatial Dimplot to check that one of the clusters corresponds to the background
+```{r message=FALSE, warning=FALSE}
+
+msi109B1 <- FindClusters(msi109B1,  verbose= F, resolution = 0.001)
+SpatialDimPlot(msi109B1, pt.size.factor = 3)
+
+```
+
+It seems that cluster 1 corresponds to the background so we will filter it out and repeat the process to check that there is no background left.
+```{r message=FALSE, warning=FALSE}
+
+msi109B1F <- subset(x = msi109B1, idents = '1', invert = TRUE)
+msi109B1F <- FindNeighbors(msi109B1F, reduction = "pca", dims = 1:30, verbose = F)
+msi109B1F <- RunUMAP(msi109B1F, reduction = "pca", dims = 1:30, verbose = F)
+
+```
+
+Let's plot again the SpatialDimPlot and check for remaining backgroud.
+```{r message=FALSE, warning=FALSE}
+
+msi109B1F <- FindClusters(msi109B1F,  verbose= F, resolution = 0.1)
+SpatialDimPlot(msi109B1F, pt.size.factor = 3)
+
+```
+Maybe there is some additional background in the external edge of the tissue, but it gets detected as the same cluster as one inside the tissue up to around 0.8 resolution. So I will not filter more.
+
+<!-- Save Seurat object -->
+```{r message=FALSE, warning=FALSE}
+ 
+saveRDS(msi109B1F, file = paste0(project.dir, "/R_objects/V11L12-109_B1_msi_F"))
+
+```
+
+## V11T17-085_B1 Substantia nigra
+
+<!-- Load data -->
+```{r message=F, warning=F}
+
+raw <- read.csv(paste0(data.dir, "/sma/V11T16-085/V11T16-085_B1/output_data/V11T16-085_B1_MSI/V11T17-085_B1.Visium.FMP.220826_smamsi.csv"), header=T)
+counts <- raw[,-c(1:2)]
+rownames(counts) <- rownames(raw)
+coordinates <- raw[,1:2]
+rownames(coordinates) <- rownames(counts)
+msi085B1 <- CreateSeuratObject(counts = t(counts), assay="Spatial")
+msi085B1@images$image =  new(
+    Class = 'SlideSeq',
+    assay = "Spatial",
+    key = "image_",
+    coordinates = coordinates
+  )
+msi085B1 <- NormalizeData(msi085B1)
+msi085B1 <- ScaleData(msi085B1)
+msi085B1 <- FindVariableFeatures(msi085B1)
+msi085B1 <- RunPCA(msi085B1, verbose = F)
+msi085B1 <- FindNeighbors(msi085B1, reduction = "pca", dims = 1:30, verbose = F)
+msi085B1 <- RunUMAP(msi085B1, reduction = "pca", dims = 1:30, verbose = F)
+
+```
+
+```{r message=F, warning=F}
+
+msi085B1 <- FindClusters(msi085B1,  verbose= F, resolution = 0.001)
+SpatialDimPlot(msi085B1, pt.size.factor = 3)
+
+```
+
+```{r message=F, warning=F}
+
+msi085B1F <- subset(x = msi085B1, idents = '1', invert = TRUE)
+msi085B1F <- FindNeighbors(msi085B1F, reduction = "pca", dims = 1:30, verbose = F)
+msi085B1F <- RunUMAP(msi085B1F, reduction = "pca", dims = 1:30, verbose = F)
+
+```
+
+```{r message=F, warning=F}
+
+msi085B1F <- FindClusters(msi085B1F,  verbose= F, resolution=0.02)
+SpatialDimPlot(msi085B1F, pt.size.factor= 3)
+
+```
+
+Here there is a remaining background cluster at the edge of the tissue so we will filter it out, as the part detected inside the tissue is really small.
+```{r message=F, warning=F}
+
+msi085B1F <- subset(x = msi085B1F, idents = '1', invert = TRUE)
+msi085B1F <- FindNeighbors(msi085B1F, reduction = "pca", dims = 1:30, verbose = F)
+msi085B1F <- RunUMAP(msi085B1F, reduction = "pca", dims = 1:30, verbose = F)
+
+```
+
+```{r message=F, warning=F}
+
+msi085B1F <- FindClusters(msi085B1F,  verbose= F, resolution = 1)
+SpatialDimPlot(msi085B1F, pt.size.factor= 3
+               )
+
+```
+
+<!-- Save Seurat object -->
+```{r message=F, warning=F}
+
+saveRDS(msi085B1F, file = paste0(project.dir, "/R_objects/V11T17-085_B1_msi_F"))
+
+```
+
+## V11T17-102: human Striatum
+
+Assemble spaceranger output files and MSI output files -->
+```{r message=FALSE, warning=FALSE}
+
+raw <- read.csv(paste0(data.dir, "/sma/V11T17-102/V11T17-102_A1/output_data/V11T17-102_A1_MSI/V11T17-102_A1.Visium.FMP.220826_smamsi.csv"), header=T)
+counts <- raw[,-c(1:2)]
+counts <- log10(counts+1)
+rownames(counts) <- paste0(rownames(raw), "_102A1")
+coordinates <- raw[,1:2]
+# rownames(coordinates) <- paste0(rownames(counts), "_102A1")
+rownames(coordinates) <- rownames(counts)
+msi102A1 <- CreateSeuratObject(counts = t(counts), assay="Spatial")
+msi102A1@images$image =  new(
+    Class = 'SlideSeq',
+    assay = "Spatial",
+    key = "image_",
+    coordinates = coordinates
+  )
+msi102A1$Sample.ID <- "V11T17-102_A1"
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+raw <- read.csv(paste0(data.dir, "/sma/V11T17-102/V11T17-102_B1/output_data/V11T17-102_B1_MSI/V11T17-102_B1.Visium.FMP.220826_smamsi.csv"), header=T)
+counts <- raw[,-c(1:2)]
+counts <- log10(counts+1)
+rownames(counts) <- paste0(rownames(raw), "_102B1")
+coordinates <- raw[,1:2]
+# rownames(coordinates) <- paste0(rownames(counts), "_102B1")
+rownames(coordinates) <- rownames(counts)
+msi102B1 <- CreateSeuratObject(counts = t(counts), assay="Spatial")
+msi102B1@images$image =  new(
+    Class = 'SlideSeq',
+    assay = "Spatial",
+    key = "image_",
+    coordinates = coordinates
+  )
+msi102B1$Sample.ID <- "V11T17-102_B1"
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+raw <- read.csv(paste0(data.dir, "/sma/V11T17-102/V11T17-102_C1/output_data/V11T17-102_C1_MSI/V11T17-102_C1.Visium.FMP.220826_smamsi.csv"), header=T)
+counts <- raw[,-c(1:2)]
+counts <- log10(counts+1)
+rownames(counts) <- paste0(rownames(raw), "_102C1")
+coordinates <- raw[,1:2]
+# rownames(coordinates) <- paste0(rownames(counts), "_102C1")
+rownames(coordinates) <- rownames(counts)
+msi102C1 <- CreateSeuratObject(counts = t(counts), assay="Spatial")
+msi102C1@images$image =  new(
+    Class = 'SlideSeq',
+    assay = "Spatial",
+    key = "image_",
+    coordinates = coordinates
+  )
+msi102C1$Sample.ID <- "V11T17-102_C1"
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+raw <- read.csv(paste0(data.dir, "/sma/V11T17-102/V11T17-102_D1/output_data/V11T17-102_D1_MSI/V11T17-102_D1.Visium.FMP.220826_smamsi.csv"), header=T)
+counts <- raw[,-c(1:2)]
+counts <- log10(counts+1)
+rownames(counts) <- paste0(rownames(raw), "_102D1")
+coordinates <- raw[,1:2]
+# rownames(coordinates) <- paste0(rownames(counts), "_102D1")
+rownames(coordinates) <- rownames(counts)
+msi102D1 <- CreateSeuratObject(counts = t(counts), assay="Spatial")
+msi102D1@images$image =  new(
+    Class = 'SlideSeq',
+    assay = "Spatial",
+    key = "image_",
+    coordinates = coordinates
+  )
+msi102D1$Sample.ID <- "V11T17-102_D1"
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+msi102 <- merge(
+  x = msi102A1,
+  y = list(msi102B1, msi102C1, msi102D1),
+  add.cell.ids = c("102A1", "102B1", "102C1", "102D1")
+)
+
+```
+
+<!-- Vanilla analysis -->
+```{r message=FALSE, warning=FALSE}
+
+msi102 <- ScaleData(msi102, verbose=F)
+msi102 <- FindVariableFeatures(msi102, verbose = F)
+
+msi102 <- msi102 %>% RunPCA(verbose = F) %>%
+  RunHarmony(assay.use = "Spatial", reduction = "pca", group.by.vars = "Sample.ID",
+                     reduction.save = "harmony", verbose = F) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30, verbose = F) %>%
+  RunUMAP(reduction = "harmony", dims = 1:30, verbose = F)
+
+```
+
+Let's check if we have some background as in the mouse samples.
+```{r message=FALSE, warning=FALSE}
+
+msi102 <- FindClusters(msi102,  verbose= F, resolution = 0.01)
+SpatialDimPlot(msi102, pt.size.factor = 3, ncol = 2)
+
+```
+It seems that we have background here too. It's visible from the D1 capture area. We will remove it and check again.
+
+```{r message=FALSE, warning=FALSE}
+
+msi102F <- subset(x = msi102, idents = '0')
+msi102F <- FindNeighbors(msi102F, reduction = "harmony", dims = 1:30, verbose = F)
+msi102F <- RunUMAP(msi102F, reduction = "harmony", dims = 1:30, verbose = F)
+
+```
+
+Let's check again
+```{r message=FALSE, warning=FALSE}
+
+msi102F <- FindClusters(msi102F,  verbose= F, resolution=0.1)
+SpatialDimPlot(msi102F, pt.size.factor = 3, ncol = 2)
+
+```
+Now it seems that there is no cluster located at the edge of the tissue so we can save the object.
+<!-- Save Seurat object -->
+```{r}
+
+saveRDS(msi102F, file = paste0(project.dir, "/R_objects/V11T17-102_msi_F"))
+
+```

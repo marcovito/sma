@@ -1,0 +1,1019 @@
+---
+title: "1_main"
+author: "M. Vicari marco.vicari@scilifelab.se"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    theme: cosmo
+    highlight: tango
+    code_folding: "hide"
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<!-- Load libraries -->
+```{r message=FALSE, warning=FALSE}
+
+library(ggrepel)
+library(RColorBrewer)
+library(STutility)
+library(dplyr)
+library(corrplot)
+
+```
+
+<!-- Load project variables -->
+```{r message=FALSE, warning=FALSE}
+
+project.dir <- "/home/marco.vicari/projects/sma_final_sub_230729/sma"
+data.dir <- paste0(project.dir, "/data")
+dir.create(paste0(project.dir, "/results"))
+dir.create(paste0(project.dir, "/results/plots"))
+plots.dir <- paste0(project.dir, "/results/plots")
+dir.create(paste0(project.dir, "/results/tables"))
+tables.dir <- paste0(project.dir, "/results/tables")
+dir.create(paste0(project.dir, "/R_objects"))
+
+matrix.cols <- c("DHB" = "darkolivegreen3",
+                 "9-AA" = "gold",
+                 "nM" = "darkgrey",
+                 "FMP-10" = "purple")
+
+my_cols = brewer.pal(12, "Paired")
+
+```
+
+This file follows the text of the article *Spatial Multimodal Analysis of Transcriptomes and Metabolomes in Tissues* and produces the plots included in the paper. All the preprocessing steps and calculations needed to prepare the objects for plotting have already been run in other scripts and the objects have been saved. In this script we will only upload the objects needed for plotting and produce the figures. 
+
+*Abstract*
+We present a spatial omics approach that combines histology, mass spectrometry imaging, and spatial transcriptomics to facilitate precise measurements of mRNA transcripts and low-molecular weight metabolites across tissue regions. The workflow is compatible with commercially available Visium glass slides. We demonstrate the potential of our method using murine and human brain samples in the context of dopamine and Parkinson’s disease.
+
+*Main*
+Spatially resolved transcriptomics (SRT) allows the measurement of genome-wide mRNA expression and provides positional information about the mRNA in a tissue section. Although key aspects of SRT technologies can vary, each technique will ultimately yield a gene-expression count table with tissue coordinates1–3. Mass spectrometry imaging (MSI) enables label-free, spatially resolved measurement of the abundance of biomolecules directly from fresh frozen tissue sections4,5. In matrix-assisted laser desorption/ionization (MALDI)-MSI, a matrix is applied to the surface of tissue sections mounted onto a glass slide. Focusing a pulsed laser beam onto the tissue section then generates ionic species from the molecules present in the sample surface, enabling the collection of mass-to-charge (m/z) spectra at defined raster positions from across the tissue section. Although the SRT and MSI technologies are becoming more popular in spatial biology, they are currently applied as separate methodologies due to experimental constraints such as non-charged, barcoded (in SRT) versus conductive (in MALDI-MSI) microscopy slides, along with the risk of RNA degradation during the harsh MSI process6,7. In the present paper, we demonstrate the possibility of combining SRT and MALDI-MSI in a single tissue section with retained specificity and sensitivity of both modalities by introducing a spatial multimodal analysis (SMA) protocol. 
+
+# *Part1: Technical analysis*
+## *Fig.1A: workflow*
+The SMA workflow comprises four steps: i) sectioning non-embedded snap-frozen samples onto non-charged, barcoded gene expression arrays, ii) mass spectrometry imaging by MALDI, iii) hematoxylin and eosin (H&E) staining and bright field microscopy, and iv) SRT (Fig. 1A). The SMA workflow does not require any modifications to the commercially available Visium glass slides, nor modifications to the MALDI-MSI or SRT protocols, except for three washes in cold methanol at the end of step ii to wash away the matrix.
+![*Figure 1. A multimodal spatial omics approach to investigate metabolites, morphology and gene expression analysis. A)* The SMA workflow and quality control design: non-embedded, snap-frozen samples are sectioned and thaw-mounted onto non-charged, barcoded Visium gene expression arrays. Tissue sections are then sprayed with MALDI matrices and MSI is performed. This is followed by H&E staining and imaging with bright field microscopy. Finally, sections are processed for SRT. We also designed three types of control samples: i) MSI - samples processed with standard MALDI-MSI protocol on ITO conductive slides; ii) VISIUM - samples processed with standard Visium protocol on all four capture areas of a Visium Gene Expression Array; iii) V-iCTRL (Visium internal control) - samples processed with Visium protocol, but MALDI-MSI was performed on other capture areas of a Visium Gene Expression Array.](/home/marco.vicari/projects/sma_final_sub_230729/sma/data/misc/Fig1a.png)
+
+## *SuppFig1,2: feasibility of SMA*
+To test the feasibility of our method, we assessed whether RNA was still present after tissue exposure to MALDI-MSI by using a slide coated with polydT probes. We mounted coronal sections of a mouse brain and sprayed it with four different MALDI matrices: 1) 9-aminoacridine (9-AA) for detection of metabolites in negative ionization mode, 2) 2,5-dihydroxybenzoic acid (DHB) for detection of metabolites in positive ionization mode, 3) norharmane for detection of various lipids, and 4) 4-(anthracen-9-yl)-2-fluoro-1-ethylpyridin-1-ium iodide (FMP-10), which charge-tags molecules with phenolic hydroxyls and/or primary amines, including neurotransmitters8. We imaged the sections using Fourier-transform ion cyclotron resonance (FTICR)-MALDI MSI, and collected spectra for approximately three hours at RT. Fluorescence microscopy imaging of the cDNA footprint generated during the Tissue Optimization assay (see Methods) showed that the captured transcripts correlated well with tissue morphology, indicating that mRNA, surprisingly, is still present after MALDI-MSI in all of the investigated matrices (Suppl. Fig. 1A-C, 2). The presence of mRNA post-MALDI was confirmed using targeted in situ sequencing9 on coronal mouse sections with FMP-10 on conductive MALDI slides (Suppl. Fig. 1D). 
+![*Suppl. Fig. 1. SMA using four different MALDI matrices. (A)* Eight mouse brain tissue sections from the striatal level of the same animal (n=8) were mounted onto a Visium Tissue Optimization slide and sprayed with four different MALDI matrices (DHB, norharmane (analyzed in both positive and negative mode, shown as Nor+ and Nor- ), 9-AA and FMP-10). Areas delimited by red lines: regions of interest imaged with MALDI-MSI. *(B)* Representative MSI results from: i) m/z 426.36, C18:1 L-Carnitine (DHB); ii) m/z 857.52, PI(36:4) (Nor-); iii) m/z 788.62 PC(36:1) (Nor+); iv,v) m/z 303.24, arachidonic acid (9-AA); vi) m/z 371.17, GABA (FMP-10). Nor+ and Nor-: Norharmane analyzed in positive and negative mode, respectively. *(C)* Fluorescence microscopy images of mRNA footprint captured with polydT probes after MALDI-MSI. Colored lines (i, iv, vi, viii, x, xii) demarcate areas imaged with MALDI-MSI, while grey lines (ii, iii, v, vii, ix, xi, xiii, xiv) demarcate areas not imaged with MALDI-MSI and used as controls. *(D)* Fluorescence intensity of tissue areas imaged or not with MALDI-MSI. The upper and lower limit of the box represent the +1 and -1 standard deviation from the mean, the horizontal line inside the box represents the mean fluorescence intensity, and the upper and lower limits of the whiskers represent the maximum and minimum fluorescence intensity values. The results shown in panels (A-C) belong to eight consecutive tissue sections from n=1 biologically independent sample examined over one independent experiment (all the sections were placed on one Visium Tissue Optimization array). The areas in square pixels over which the statistics is derived are the following: i=768047, ii=355349, iii=843707, iv=866085, v=578711, vi=805789, vii=562179, viii=846042, ix=317398, x=843416, xi=611982, xii=779667, xiii=727089, xiv=751797. *(E)* A mouse brain tissue sections (n=1) from the hippocampus level was mounted onto an ITO slide and sprayed FMP-10. The area delimited by a red line demarcates the region of interest imaged with MALDI-MSI. *(F)* Targeted In Situ Sequencing data demonstrate similar rolling circle product (RCP) density generated from MALDI-MSI processed region (upper right panel) and non-processed region (lower right panel) for demarcated regions of interest in the mouse coronal section (n=1). Targeted ISS simultaneously probed for housekeeping gene, Gapdh labelled in Magenta (Cy5), and a panel of five control genes - Foxj1, Plp1, Lamp5, Rorb and Kcnip2 that are labelled in Cyan (AF750). *(G)* Mean Cy5 and AF750 fluorescence intensity of rolling circle products in tissue areas imaged or not with MALDI-MSI.The results shown in panels (E-G) belong to one tissue section from n=1 biologically independent sample examined over one independent experiment. The number of RCPs detected in the MALDI-MSI processed region in AF750 and Cy5 and the number of RCPs detected in the non-processed region in AF750 and Cy5 respectively, which the statistics is derived from, are the following : n=3830,n=18231,n=3051,n=18193. The lower and upper hinges of the boxplot correspond to the first and third quartiles (the 25th and 75th percentiles), the central white dot corresponds to the median, the upper and lower whiskers extend from the hinge to the maximum or minimum respectively.](/home/marco.vicari/projects/sma_final_sub_230729/sma/data/misc/SuppFig1.png)
+
+### Supp.Fig.1D
+#### Supp.Fig.1Di
+```{r message=F, warning=F}
+
+fluo <- read.csv(file = paste0(data.dir, "/sma/TO2/fluo.csv"), header = T)
+
+colnames(fluo)[1] <- "dataset"
+fluo$dataset <- factor(fluo$dataset , levels=fluo$dataset)
+
+p <- ggplot(fluo[1:3,], aes(x=dataset, fill = dataset))+
+  geom_boxplot(aes(lower=mean-sd,upper=mean+sd,middle=mean,ymin=min,ymax=max),stat="identity")+
+    scale_fill_manual(values=c("green1", "grey", "grey")) + theme_classic()
+pdf(paste0(plots.dir, "/SuppFig1Di.pdf"))
+print(p) 
+dev.off()
+p
+
+```
+
+#### Supp.Fig.1Dii
+```{r message=F, warning=F}
+
+p <- ggplot(fluo[4:7,], aes(x=dataset, fill = dataset))+
+  geom_boxplot(aes(lower=mean-sd,upper=mean+sd,middle=mean,ymin=min,ymax=max),stat="identity")+
+      scale_fill_manual(values=c("orange", "grey", "orange", "grey")) + theme_classic()
+pdf(paste0(plots.dir, "/SuppFig1Dii.pdf"))
+print(p) 
+dev.off()
+
+```
+
+#### Supp.Fig.1Diii
+```{r message=F, warning=F}
+
+p <- ggplot(fluo[8:11,], aes(x=dataset, fill = dataset))+
+  geom_boxplot(aes(lower=mean-sd,upper=mean+sd,middle=mean,ymin=min,ymax=max),stat="identity")+
+  scale_fill_manual(values=c("gold", "grey", "gold", "grey")) + theme_classic()
+pdf(paste0(plots.dir, "/SuppFig1Diii.pdf"))
+print(p) 
+dev.off()
+p
+
+```
+
+#### Supp.Fig.1Div
+```{r message=F, warning=F}
+
+p <- ggplot(fluo[12:14,], aes(x=dataset, fill = dataset))+
+  geom_boxplot(aes(lower=mean-sd,upper=mean+sd,middle=mean,ymin=min,ymax=max),stat="identity")+
+  scale_fill_manual(values=c("purple", "grey", "grey")) + theme_classic()
+pdf(paste0(plots.dir, "/SuppFig1Div.pdf"))
+print(p) 
+dev.off()
+p
+
+```
+
+#### Number of observations per sample
+```{r}
+df <- knitr::kable(fluo[,1:2])
+cat("The number of spots per sample used to produce the violin and box plots are the following", df, sep="\n")
+
+```
+
+### Supp.Fig.2 
+#### Supp.Fig.2AB nUMI nGenes mouse samples
+```{r message=F, warning=F}
+
+se <- readRDS(paste0(project.dir, "/R_objects/mPDStrRNA.10xFFBM.STUnF"))
+
+```
+
+Plots
+```{r message=F, warning=F, fig.width=11, fig.height=8, fig.cap="QC metrics. A) Number of unique genes per spot. B) Number of UMIs per spot. Each facet represents a type of matrix."}
+
+p1 <- ggplot(se[[]], aes(type, nFeature_RNA, fill = Matrix)) +
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.2) +
+  theme_bw() +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "Unique genes per spot") +
+  facet_grid(~Condition, scales = "free", space = "free", labeller = labeller(matrix = setNames(paste0("condition: ", unique(se$Condition)), unique(se$Condition))))+
+  # scale_color_manual(values = sample.cols)+
+  scale_fill_manual(values = matrix.cols)+
+  ggtitle("Total and median genes per spots, raw data")
+
+
+p2 <-  ggplot(se[[]], aes(type, nCount_RNA, fill = Matrix)) +
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.2) +
+  theme_bw() +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "UMIs per spot") +
+  facet_grid(~Condition, scales = "free", space = "free", labeller = labeller(matrix = setNames(paste0("condition: ", unique(se$Condition)), unique(se$Condition))))+
+  # scale_color_manual(values = sample.cols)+
+  scale_fill_manual(values = matrix.cols)+
+  ggtitle("Total and median counts per spots, raw data")
+
+
+p <- (p1 / p2) + patchwork::plot_annotation(tag_levels = "A")
+
+fnm <- paste0(plots.dir, "/SuppFig2AB.pdf")
+pdf(fnm, width = 11, height = 8)
+print(p)
+dev.off()
+p
+
+```
+
+Adding number of observations per sample in caption
+```{r}
+df <- count(se[[]], type)
+table_df <- knitr::kable(df)
+# string_df <- paste0(df$n, collapse = ", ")
+cat("The number of spots per sample used to produce the violin and box plots are the following", table_df, sep="\n")
+
+```
+
+Calculating lowest and highest mean genes per spot to add in the text
+```{r}
+
+MeansByType <- se@meta.data %>% 
+  group_by(type) %>% 
+  summarise_at(vars(nFeature_RNA), list(mean = mean))
+
+cat("The average number of unique genes ranges between", range(MeansByType$mean))
+
+```
+
+#### Supp.Fig.2CD nUMI nGenes human sample
+```{r message=F, warning=F}
+
+se.all <- readRDS(paste0(project.dir, "/R_objects/allRNA_10xFFBM_STUF"))
+se <- SubsetSTData(se.all, expression = Condition == "hPD" & Data.Type == "RNA" & Visium.Protocol == "RNArescue" )
+
+```
+
+<!-- Plots -->
+```{r message=F, warning=F}
+
+p1 <- ggplot(se[[]], aes(type, nFeature_RNA, fill = Matrix)) +
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.2) +
+  theme_bw() +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "Unique genes per spot") +
+  facet_grid(~Condition, scales = "free", space = "free", labeller = labeller(matrix = setNames(paste0("condition: ", unique(se$Condition)), unique(se$Condition))))+
+  # scale_color_manual(values = sample.cols)+
+  scale_fill_manual(values = matrix.cols)+
+  ggtitle("Total and median \ngenes per spots, raw data")
+
+p2 <-  ggplot(se[[]], aes(type, nCount_RNA, fill = Matrix)) +
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.2) +
+  theme_bw() +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(title = "UMIs per spot") +
+  facet_grid(~Condition, scales = "free", space = "free", labeller = labeller(matrix = setNames(paste0("condition: ", unique(se$Condition)), unique(se$Condition))))+
+  # scale_color_manual(values = sample.cols)+
+  scale_fill_manual(values = matrix.cols)+
+  ggtitle("Total and median \ncounts per spots, raw data")
+
+p3 <- ST.FeaturePlot(se, features = "nFeature_RNA", indices = 1, pt.size = 0.5)
+p4 <- ST.FeaturePlot(se, features = "nCount_RNA", indices = 1, pt.size = 0.5)
+p <- ((p1+p3) / (p2+p4)) + patchwork::plot_annotation(tag_levels = "A")
+
+fnm <- paste0(plots.dir, "/SuppFig2CD.pdf")
+pdf(fnm, width = 6, height = 8)
+print(p)
+dev.off()
+p
+
+```
+
+Adding number of observations per sample in caption
+```{r}
+df <- knitr::kable(count(se[[]], type))
+cat("The number of spots per sample used to produce the violin and box plots are the following", df, sep="\n")
+
+```
+
+#### Supp.Fig.2Ei Gene body coverage
+```{r message=F, warning=F}
+
+df <- read.csv(file = paste0(tables.dir, "/rseqc_output.csv"), header = T)
+pdf(paste0(plots.dir, "/SuppFig2Ei.pdf"))
+x=1:100
+layout(matrix(c(1,1,1,2,1,1,1,2,1,1,1,2), 4, 4, byrow = TRUE))
+plot(x,df$V11L12_109_D1_pgb,type='l',xlab="Gene body percentile (5'->3')", ylab="Coverage",lty=2, lwd=2,col="purple4")
+lines(x,df$V11L12_109_C1_RNA_pgb,type='l', lwd=2, col="magenta")
+lines(x,df$V11L12_038_A1_RNA_pgb,type='l', lwd=2, col="green1")
+lines(x,df$V11L12_109_A1_RNA_pgb,type='l', lwd=2, col="pink")
+lines(x,df$V11L12_038_B1_RNA_pgb,type='l', lwd=2, col="darkolivegreen")
+lines(x,df$V11T17_101_B1_pgb,type='l', lty=2, lwd=2, col="black")
+lines(x,df$V11L12_038_C1_pgb,type='l', lty=2, lwd=2, col="grey")
+lines(x,df$V11L12_109_B1_RNA_pgb,type='l', lwd=2, col="purple2")
+lines(x,df$V11L12_038_D1_RNA_pgb,type='l', lwd=2, col="gold")
+par(mar=c(1,0,2,1))
+plot.new()
+legend(0,1,fill=c("purple4","magenta","green1","pink","darkolivegreen","black","grey","purple2","gold"),legend=c("iCtrl.FMP10.mPD3.8","Sma.FMP10.mPD4.7","Sma.DHB.mPD3.1","Sma.FMP10.mPD1.5","Sma.DHB.mPD3.2","V.nM.mPD3.9","iCtrl.nM.mPD3.3","Sma.FMP10.mPD3.6","Sma.9AA.mPD3.4"))
+dev.off()
+
+# repeat the plot to show it in the report
+x=1:100
+layout(matrix(c(1,1,1,2,1,1,1,2,1,1,1,2), 4, 4, byrow = TRUE))
+plot(x,df$V11L12_109_D1_pgb,type='l',xlab="Gene body percentile (5'->3')", ylab="Coverage",lty=2, lwd=2,col="purple4")
+lines(x,df$V11L12_109_C1_RNA_pgb,type='l', lwd=2, col="magenta")
+lines(x,df$V11L12_038_A1_RNA_pgb,type='l', lwd=2, col="green1")
+lines(x,df$V11L12_109_A1_RNA_pgb,type='l', lwd=2, col="pink")
+lines(x,df$V11L12_038_B1_RNA_pgb,type='l', lwd=2, col="darkolivegreen")
+lines(x,df$V11T17_101_B1_pgb,type='l', lty=2, lwd=2, col="black")
+lines(x,df$V11L12_038_C1_pgb,type='l', lty=2, lwd=2, col="grey")
+lines(x,df$V11L12_109_B1_RNA_pgb,type='l', lwd=2, col="purple2")
+lines(x,df$V11L12_038_D1_RNA_pgb,type='l', lwd=2, col="gold")
+par(mar=c(1,0,2,1))
+plot.new()
+legend(0,1,fill=c("purple4","magenta","green1","pink","darkolivegreen","black","grey","purple2","gold"),legend=c("iCtrl.FMP10.mPD3.8","Sma.FMP10.mPD4.7","Sma.DHB.mPD3.1","Sma.FMP10.mPD1.5","Sma.DHB.mPD3.2","V.nM.mPD3.9","iCtrl.nM.mPD3.3","Sma.FMP10.mPD3.6","Sma.9AA.mPD3.4"))
+
+```
+
+#### Supp.Fig.2Eii sequencing saturation
+```{r message=F, warning=F}
+
+SeqSat <- read.csv(file = paste0(data.dir,"/misc/SeqSat.csv"), header = T)
+SeqSat <- SeqSat %>%
+  mutate(control = ifelse(dataset == "Visium" | dataset == "iCtrlFMP10" | dataset == "iCtrlnM", "yes", "no"))
+p <- ggplot(SeqSat, aes(x = x, y = y)) + 
+  geom_line(aes(color = dataset, linetype=control), size=1.5) + 
+  scale_color_manual(values = c("gold", "green1", "darkolivegreen", "pink", "purple2", "magenta", "purple4", "grey", "black")) + labs(x="Mean reads per spot", y="Sequencing saturation")
+
+pdf(paste0(plots.dir, "/SuppFig2Eii.pdf"))
+p
+dev.off()
+p
+
+```
+
+#### Supp.Fig.2Eiii 
+Median genes per spot as a function of sequencing depth
+```{r message=F, warning=F}
+
+mgsr <- read.csv(file = paste0(data.dir,"/misc/MeanGenesSpotReads.csv"), header = T)
+p <- ggplot(mgsr, aes(x = x, y = y)) + 
+  geom_line(aes(color = dataset, linetype=control), size=1.5) + 
+  scale_color_manual(values = c("gold", "green1", "darkolivegreen", "pink", "purple2", "magenta", "purple4", "grey", "black")) + labs(x="Mean reads per spot", y="MedianGenesPerSpot")
+
+pdf(paste0(plots.dir, "/SuppFig2Eiii.pdf"))
+p
+dev.off()
+p
+```
+
+#### Supp.Fig.2F
+You can find the BioAnalyzer traces in the file "sma/data/misc/MV220524_Eukaryote Total RNA Pico_2022-05-24_17-58-49.pdf". The traces are the ones named "MV_mPD1", "MV_mPD3", "MV_mPD4" and "MV_hStr".
+## *Fig1B: correlations*
+
+Next, we investigated the reproducibility of SMA. For this purpose, we repeated the experiments using barcoded Visium oligonucleotide slides, which enabled the quantification of individual captured transcripts by sequencing. We used seven consecutive coronal mouse brain sections from three different mice, imaged with three different MALDI matrices (9-AA, DHB, and FMP-10). We compared MALDI-MSI and gene expression data from matching tissue sections analyzed with MALDI-MSI or Visium, respectively. SMA data analysis demonstrated that the small molecule and gene expression profiles correlated well (r>0.74) with the reference data (Fig. 1B). 
+
+### Fig1Bi: FMP10
+Correlation plot of peak correlations for mPD3 and FMP-10
+```{r warning=FALSE, message=FALSE}
+
+corrMsimPDStrFMP10 <- as.matrix(read.csv(file = paste0(data.dir, "/misc/msi_pearson_FMP10_ITO_VISIUM_3mice.csv"), header = T, row.names = 1, check.names = F))
+fnm <- paste0(plots.dir, "/Fig1Bi.pdf")
+pdf(fnm, width = 5, height = 5)
+corrplot(corrMsimPDStrFMP10, method="circle", addCoef.col = 'lightgrey', col = COL1("Purples", 15), type="lower", tl.col="darkgrey", tl.srt=45, pch.cex = 0.9, pch.col = 'yellow', is.corr = F, col.lim=c(0.4,1), diag=F, cl.cex=0.8, cl.length=4)
+dev.off()
+
+corrplot(corrMsimPDStrFMP10, method="circle", addCoef.col = 'lightgrey', col = COL1("Purples", 15), type="lower", tl.col="darkgrey", tl.srt=45, pch.cex = 0.9, pch.col = 'yellow', is.corr = F, col.lim=c(0.4,1), diag=F, cl.cex=0.8, cl.length=4)
+
+```
+
+### Fig1Bii: DHB
+Correlation plot of peak correlations (sma and msi done with DHB matrix)
+```{r warning=FALSE, message=FALSE}
+
+corrMsimPDStrDHB <- as.matrix(read.csv(file = paste0(data.dir, "/misc/msi_pearson_DHB.csv"), header = T, row.names = 1, check.names = F))
+fnm <- paste0(plots.dir, "/Fig1Bii.pdf")
+pdf(fnm, width = 4.5, height = 4.5)
+corrplot(corrMsimPDStrDHB, method="circle", addCoef.col = 'lightgrey', col = COL1("Greens", 15), type="lower", tl.col="darkgrey", tl.srt=45, pch.cex = 0.9, pch.col = 'yellow', is.corr = F, col.lim=c(0.4,1), diag=F, cl.cex=0.8, cl.length=4)
+dev.off()
+
+corrplot(corrMsimPDStrDHB, method="circle", addCoef.col = 'lightgrey', col = COL1("Greens", 15), type="lower", tl.col="darkgrey", tl.srt=45, pch.cex = 0.9, pch.col = 'yellow', is.corr = F, col.lim=c(0.4,1), diag=F, cl.cex=0.8, cl.length=4)
+
+```
+
+### Fig1Ba: 9AA 
+Correlation plot of peak correlations (sma and msi done with 9AA matrix)
+```{r warning=FALSE, message=FALSE}
+
+corrMsimPDStr9AA <- as.matrix(read.csv(file = paste0(data.dir, "/misc/msi_pearson_9aa.csv"), header = T, row.names = 1, check.names = F))
+fnm <- paste0(plots.dir, "/Fig1Biii.pdf")
+pdf(fnm, width = 4, height = 4)
+corrplot(corrMsimPDStr9AA, method="circle", addCoef.col = 'lightgrey', col = COL1("Oranges", 15), type="lower", tl.col="darkgrey", tl.srt=45, pch.cex = 0.9, pch.col = 'yellow', is.corr = F, col.lim=c(0.4,1), diag=F, cl.cex=0.8, cl.length=4)
+dev.off()
+
+corrplot(corrMsimPDStr9AA, method="circle", addCoef.col = 'lightgrey', col = COL1("Oranges", 15), type="lower", tl.col="darkgrey", tl.srt=45, pch.cex = 0.9, pch.col = 'yellow', is.corr = F, col.lim=c(0.4,1), diag=F, cl.cex=0.8, cl.length=4)
+
+```
+
+### Fig1Biv: RNA
+```{r warning=FALSE, message=FALSE}
+
+#Tables needed for correlation plots
+corrm <- as.matrix(read.csv(file = paste0(project.dir, "/results/tables/corrmLog10counts_RNA.mPDStr.10xF.STUnF.csv"), header = T, row.names = 1))
+p.matm <- as.matrix(read.csv(file = paste0(project.dir, "/results/tables/p.matmLog10counts_RNA.mPDStr.10xF.STUnF.csv"), header = T, row.names = 1))
+
+# Tables needed for scatterplots
+gene_attr <- read.csv( file = paste0(project.dir, "/results/tables/gene_attr_RNA.mPDStr.10xF.STUnF.csv"), header = T, row.names = 1, check.names = F)
+Log10countsmPDStr <- read.csv(file = paste0(project.dir, "/results/tables/Log10counts_RNA.mPDStr.10xF.STUnF.csv"), header = T, row.names = 1, check.names = F)
+Log10countsmPD3 <- read.csv(file = paste0(project.dir, "/results/tables/Log10countsmPD3_RNA.mPDStr.10xF.STUnF.csv"), header = T, row.names = 1, check.names = F)
+Log10countsFMP10 <- read.csv(file = paste0(project.dir, "/results/tables/Log10countsFMP10_RNA.mPDStr.10xF.STUnF.csv"), header = T, row.names = 1, check.names = F)
+
+```
+
+Corrplot of gene Log10 counts across all technical and biological conditions
+```{r warning=FALSE, message=FALSE}
+
+fnm <- paste0(plots.dir, "/Fig1Biv.pdf")
+pdf(fnm, width = 6.5, height = 6.5)
+corrplot(corrm, method="circle", addCoef.col = 'lightgrey', col = COL1("Reds", 15), type="upper", tl.col="darkgrey", tl.srt=45, p.mat = p.matm,  pch.cex = 0.8, pch.col = 'black', is.corr = F, col.lim=c(0.95,1), diag=F, cl.cex=0.8, cl.length=4, number.cex = 0.8)
+dev.off()
+
+corrplot(corrm, method="circle", addCoef.col = 'lightgrey', col = COL1("Reds", 15), type="upper", tl.col="darkgrey", tl.srt=45, p.mat = p.matm,  pch.cex = 0.8, pch.col = 'black', is.corr = F, col.lim=c(0.95,1), diag=F, cl.cex=0.8, cl.length=4, number.cex = 0.8)
+
+```
+
+## Suppl. Fig. 3-4
+Furthermore, 61.6%-98.2% of the molecules were expressed within an absolute log10 fold change below 0.5 compared to stand-alone MALDI-MSI or Visium (Suppl. Fig. 3-4), without appreciable effect on molecule identification and downstream biological analysis.
+N.B.: to reproduce those figures follow the scripts fdr_log_plots.ipynb and fdr_log_plots_msi.ipynb.
+
+## *Figs.1C-E*
+Joint analysis and visualization of transcriptomics data showed that the gene expression integrates well across experimental conditions, with a similar expression of marker genes and high conservation of the spatial clusters (Figs. 1C-E). These results provide strong evidence that SMA can be used with several matrices for simultaneous gene expression and biomolecule profiling.
+
+```{r message=F, warning=F}
+
+se <- readRDS(file = paste0(project.dir, "/R_objects/mPDStrRNA.10xFFBM.STUF.An"))
+
+```
+
+### *Fig1Ci: UMAP_byType*
+```{r message=F, warning=F}
+
+p <- DimPlot(se, reduction = "umap.harmony", group.by = "Matrix", pt.size= 1, cols=matrix.cols, shape.by = "repl")+
+  ggtitle("")
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1Ci.pdf")
+pdf(fnm , width = 6.9, height = 6)
+print(p)
+dev.off()
+p
+
+```
+
+### *Fig1Cii: UMAP_byMatrix*
+```{r message=F, warning=F}
+
+p <- DimPlot(se, reduction = "umap.harmony", group.by = "Matrix", pt.size= 1, cols=matrix.cols)+
+  ggtitle("")
+
+# Export plot as JPEG
+fnm <- paste0(plots.dir, "/Fig1Cii.pdf")
+pdf(fnm , width = 6.9, height = 6)
+print(p)
+dev.off()
+p
+
+```
+
+### *Fig1Ciii: UMAP_byCluster*
+```{r message=F, warning=F}
+
+p <- DimPlot(se, reduction = "umap.harmony", group.by = "seurat_clusters", pt.size= 1, cols=alpha(my_cols))+
+  ggtitle("")
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1Ciii.pdf")
+pdf(fnm , width = 6.9, height = 6)
+print(p)
+dev.off()
+p
+
+```
+
+### *Fig1D: DotPlot marker genes*
+<!-- Plot -->
+```{r message=F, warning=F}
+
+CL.mPDStr <- read.csv(file = paste0(tables.dir, "/DGE_mPDStr_CL_logfc025_noThresholds.csv"), header = T, row.names = 1)
+
+CL.mPDStr.F <- CL.mPDStr %>%
+  filter(p_val_adj < 0.01)
+
+topCL <- CL.mPDStr.F %>%
+  group_by(cluster) %>%
+  top_n(wt = avg_log2FC, n = 3)
+
+# Export plot as JPEG
+fnm <- paste0(plots.dir, "/Fig1D.pdf")
+pdf(fnm, width = 12, height = 5)
+DotPlot(se, features = unique(topCL$gene), col.min = 0, dot.min = 0, cols= c("lightgrey", "red"), group.by = "clusters_type", dot.scale = 2.5) + RotatedAxis()+ coord_flip() + xlab('Marker genes')+ ylab('Samples') + theme(text = element_text(size = 10), axis.text.x=element_text(size=3),axis.text.y=element_text(size=5), legend.direction="horizontal", legend.position = "top")
+dev.off()
+
+DotPlot(se, features = unique(topCL$gene), col.min = 0, dot.min = 0, cols= c("lightgrey", "red"), group.by = "clusters_type", dot.scale = 2.5) + RotatedAxis()+ coord_flip() + xlab('Marker genes')+ ylab('Samples') + theme(text = element_text(size = 10), axis.text.x=element_text(size=3),axis.text.y=element_text(size=5), legend.direction="horizontal", legend.position = "top")
+
+```
+
+### *Fig1Ea: Spatial clusters Visium* 
+RNA clusters on Visium sample 
+```{r warning=F, message=F}
+
+p1 <- FeatureOverlay(se, features = "seurat_clusters", pt.size = 2, label.by = "type.area", dark.theme = F, 
+               sampleids = 9, cols = my_cols )+
+  ggtitle(" ")
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1Ei.pdf")
+pdf(fnm , width = 6, height = 6)
+print(p1)
+dev.off()
+p1 
+
+```
+
+### *Fig1Eb: Spatial clusters FMP-10* 
+RNA clusters on sma FMP-10 sample
+```{r warning=F, message=F}
+
+p2 <- FeatureOverlay(se, features = "seurat_clusters", pt.size = 1.8, label.by = "type.area", dark.theme = F, 
+               sampleids = 6, cols = my_cols)+
+  ggtitle(" ")
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1Eii.pdf")
+pdf(fnm , width = 6, height = 6)
+print(p2)
+dev.off()
+p2
+
+```
+
+### *Fig1Ec: Spatial clusters 9-AA* 
+RNA clusters on sma 9-*AA sample
+```{r warning=F, message=F}
+
+p3 <- FeatureOverlay(se, features = "seurat_clusters", pt.size = 1.8, label.by = "type.area", dark.theme = F, 
+               sampleids = 4, cols = my_cols)+
+  ggtitle(" ")
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1Eiii.pdf")
+pdf(fnm , width = 6, height = 6)
+print(p3)
+dev.off()
+p3
+
+```
+
+### *Fig1Ed: Spatial clusters DHB* 
+RNA clusters on sma DHB sample
+```{r warning=F, message=F}
+
+p4 <- FeatureOverlay(se, features = "seurat_clusters", pt.size = 1.8, label.by = "type.area", dark.theme = F, 
+               sampleids = 1, cols = my_cols)+
+  ggtitle(" ")
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1Eiv.pdf")
+pdf(fnm , width = 6, height = 6)
+print(p4)
+dev.off()
+p4
+
+```
+
+### *Fig1E: the four images together*
+```{r warning=F, message=F}
+
+p <-p1|p2|p3|p4
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig1E.pdf")
+pdf(fnm , width = 24, height = 6)
+print(p)
+dev.off()
+p
+
+```
+
+
+
+# *Part2: Biological application*
+To further demonstrate the applicability of SMA, we used it on a mouse model of Parkinson’s disease (PD). PD is the most common neurodegenerative disorder among the human population after Alzheimer’s disease10,11. It is characterized by the loss of dopaminergic neurons within the substantia nigra pars compacta (SNc), containing neurons that project to the dorsal putamen of the striatum12. In the present study, we aimed to capture both gene expression and corresponding neurotransmitters from two brain regions (SNc and striatum) of three unilateral 6-hydroxydopamine (6-OHDA)-lesioned mice13 (Fig. 2A, Fig. 2Bi, Fig. 2Bvi, Suppl. Fig. 5). As expected, SMA predominantly detected dopamine in the intact striatum and SNc, but not in the lesioned contralateral hemisphere (Fig. 2Bii, Fig. 2Bvii). The multimodal data produced through SMA was also leveraged to identify the expression of genes associated with dopamine expression. Unsurprisingly, the key dopaminergic pathway genes Th, Slc6a3, Slc18a2 and Ddc were found to be correlated with dopamine expression in the SNc14. Likewise, in the striatal sections, the dopamine levels were positively correlated with the expression of genes like Pcp4 and Tac1, and negatively correlated with genes like Penk and Cartpt, suggesting dysregulation of medium spiny neurons (MSNs) (Fig. 2Biv, Fig. 2Bix, Fig. 2Di-ii, Suppl. Fig. 6-7), while corroborating previous findings15–17. To substantiate our results, we sought to perform cell type deconvolution18 using scRNA-seq data from a mouse brain atlas19. Strikingly, we found a lower proportion of midbrain dopaminergic neurons MBDOP2 in the lesioned SNc and ventral tegmental area (VTA). A similar phenotype was observed in the lesioned dorsal striatum for MSN1 neurons, a subtype of medium spiny neurons (Fig. 2Bv, Fig. 2Bx). Furthermore, we were able to specify the localization of multiple neurotransmitters and metabolites, such as taurine, 3-methoxytyramine (3-MT), 3,4-dihydroxy-phenylacetaldehyde (DOPAL), 3,4-dihydroxyphenylacetic acid (DOPAC), norepinephrine, serotonin, histidine, tocopherol and GABA (Suppl. Fig. 5). The results demonstrated a similar spatial distribution of molecules as was previously reported in rat models using MALDI-MSI alone8.
+
+## *Fig2B: mouse Striatum and Substantia Nigra*
+
+### *Fig2Bii-v: mouse Striatum*
+
+#### Dopamine
+<!-- Upload msi object -->
+```{r message=F, warning=F}
+
+msi109B1F <- readRDS(paste0(project.dir, "/R_objects/V11L12-109_B1_msi_F"))
+
+```
+
+N.B. The following image must be flipped and rotated to match the one in the manuscript.
+```{r message=F, warning=F}
+
+pB <- SpatialFeaturePlot(msi109B1F, features = "X674.2805", 
+                         pt.size.factor = 4, alpha = 1, stroke = 0) +
+  scale_fill_viridis_c()
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig2Bii.pdf")
+pdf(fnm , width = 6, height = 6)
+print(pB)
+dev.off()
+pB
+
+```
+
+#### H&E 
+<!-- Upload Seurat object -->
+```{r message=F, warning=F}
+
+se <- readRDS(file = paste0(project.dir, "/R_objects/mPDStrRNA.10xFFBM.STUF.An"))
+
+```
+
+```{r message=F, warning=F, fig.width=4*3, fig.height=4*2} 
+
+fnm <- paste0(plots.dir, "/Fig2Biii.jpg")
+jpeg(fnm , width = 990, height = 1000, res = 150)
+ImagePlot(se, indices = 6, type = "processed", method = "raster")
+dev.off()
+
+ImagePlot(se, indices = 6, type = "processed", method = "raster")
+```
+
+#### Pcp4
+```{r warning=F, message=F}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+
+p <- FeatureOverlay(se,
+                    features = "Pcp4",
+                    sampleids = 6,
+                    pt.size = 2,
+                    center.zero = F, 
+                    cols = blue,
+                    value.scale = "samplewise", 
+                    show.sb = TRUE
+                      )
+
+fnm <- paste0(plots.dir, "/Fig2Biv.pdf")
+# Export plot as pdf
+pdf(fnm , width = 6, height = 6)
+p
+dev.off()
+p
+
+```
+
+#### MSN1
+```{r warning=F, message=F, fig.width=7*3, fig.height=7*3}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+p <- FeatureOverlay(se, features = "Telencephalon.projecting.inhibitory.neurons.MSN1",
+           sampleids = 6,
+           pt.size = 2, 
+           center.zero = F, 
+           cols = blue, 
+           value.scale = "samplewise", 
+           show.sb = TRUE)
+fnm <- paste0(plots.dir, "/Fig2Bv.pdf")
+pdf(fnm , width = 6, height = 6)
+p
+dev.off()
+p
+
+```
+
+#### Dopamine-Genes correlation
+<!-- Upload results -->
+```{r warning=F, message=F}
+
+cormstr <- read.csv(file = paste0(tables.dir, "/cormstr_onlyCPACBSpots.csv"), header = T, row.names = 1)
+
+```
+
+<!-- Volcano Plot -->
+```{r message=F, warning=F}
+
+mycolors <- c("red", "blue", "grey")
+names(mycolors) <- c("NegCor", "PosCor", "NO")
+
+p <- ggplot(data=cormstr, aes(x=rho, y=-log10(FDR), col=sig, label=corlabel)) +
+  geom_point() +
+  geom_vline(xintercept=c(-0.2, 0.2), col="black") +
+  geom_hline(yintercept=-log10(0.01), col="black") +
+  scale_color_manual(values=mycolors)+
+  geom_text_repel(show.legend = F, max.overlaps = 50) +
+  scale_x_reverse() +
+  theme_minimal()
+
+fnm <- paste0(plots.dir, "/Fig2Di.pdf")
+pdf(fnm, width = 8, height = 5)
+print(p)
+dev.off()
+p
+
+```
+
+## *Suppl. Fig. 5*
+N.B. These images were produced with the FTMS control (Bruker Daltonics, v 2.3.0), the SCilS Lab Pro software (v 2023b, Bruker Daltonics), flexImaging (v 5.0, Bruker Daltonics) and the SCiLS Lab API (v 6.0 Bruker Daltonics) (later on we will refer to those as programs for MSI data analysis). We cannot reproduce these images using the current script.
+
+## *Suppl.Fig.6*
+N.B. The ion images presented in this figure were produced with MSI data analysis programs. We cannot reproduce these images using the current script. Here we reproduce only the Penk and Tac1 profiles.
+<!-- Upload Seurat object -->
+```{r message=F, warning=F}
+
+se <- readRDS(file = paste0(project.dir, "/R_objects/mPDStrRNA.10xFFBM.STUF.An"))
+
+```
+
+### Penk
+```{r warning=F, message=F}
+
+p <- FeatureOverlay(se,
+                    features = "Penk",
+                    sampleids = 4,
+                    pt.size = 2,
+                    center.zero = F, 
+                    value.scale = "samplewise", 
+                    show.sb = TRUE
+                      )
+
+fnm <- paste0(plots.dir, "/SuppFig6B.pdf")
+# Export plot as pdf
+pdf(fnm , width = 6, height = 6)
+p
+dev.off()
+p
+
+```
+
+### Tac1
+```{r warning=F, message=F}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+
+p <- FeatureOverlay(se,
+                    features = "Tac1",
+                    sampleids = 4,
+                    pt.size = 2,
+                    center.zero = F, 
+                    cols = blue,
+                    value.scale = "samplewise", 
+                    show.sb = TRUE
+                      )
+
+fnm <- paste0(plots.dir, "/SuppFig6D.pdf")
+# Export plot as pdf
+pdf(fnm , width = 6, height = 6)
+p
+dev.off()
+p
+
+```
+
+## *Supp.Fig.7*
+N.B. To reproduce the images in Supp.Fig.7 follow the script WGCNA_20230428.Rmd
+
+### *Fig2Bvii-x: mouse SN*
+#### Dopamine
+<!-- Upload msi object -->
+```{r message=F, warning=F}
+
+msi085B1F <- readRDS(paste0(project.dir, "/R_objects/V11T17-085_B1_msi_F"))
+
+```
+
+<!-- Plot -->
+N.B. The following image must be flipped and rotated to match the one in the manuscript.
+```{r message=F, warning=F}
+
+pA <- SpatialFeaturePlot(msi085B1F, features = "X674.2805", pt.size.factor = 3) +
+  scale_fill_viridis_c()
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig2Bvii.pdf")
+pdf(fnm , width = 6, height = 6)
+print(pA)
+dev.off()
+pA
+
+```
+
+#### H&E 
+<!-- Uplaod Seurat object -->
+```{r message=F, warning=F}
+
+se <- readRDS(se, file = paste0(project.dir, "/R_objects/mPDSubNig.10xFFBM.STUF.An"))
+
+```
+
+```{r message=F, warning=F, fig.width=4*3, fig.height=4*2} 
+
+fnm <- paste0(plots.dir, "/Fig2Bviii.jpg")
+jpeg(fnm , width = 990, height = 1000, res = 150)
+ImagePlot(se, indices = 2, type = "processed", method = "raster")
+dev.off()
+ImagePlot(se, indices = 2, type = "processed", method = "raster")
+
+```
+
+#### Th
+```{r message=F, warning=F}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+
+p <- FeatureOverlay(se,
+                    features = "Th",
+                    sampleids = 2,
+                    pt.size = 2,
+                    center.zero = F, 
+                    cols = blue,
+                    value.scale = "samplewise", 
+                    show.sb = TRUE
+                      )
+
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig2Bix.pdf")
+pdf(fnm , width = 6, height = 6)
+print(p)
+dev.off()
+p
+
+```
+
+#### Cell type
+```{r message=F, warning=F,fig.width=7*3, fig.height=7*2}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+p <- FeatureOverlay(se, features = "Cholinergic.and.monoaminergic.neurons.MBDOP2",
+           sampleids = 2,
+           pt.size = 2, 
+           center.zero = F, 
+           cols = blue, 
+           value.scale = "samplewise", 
+           show.sb = TRUE) + theme() 
+# Export plot as PDF
+fnm <- paste0(plots.dir, "/Fig2Bx.pdf")
+pdf(fnm , width = 6, height = 6)
+print(p)
+dev.off()
+p
+
+```
+
+#### Dopamine-Genes correlation
+<!-- Upload results -->
+```{r message=F, warning=F}
+
+cormsubnig <- read.csv(file = paste0(tables.dir, "/cormsubnig_onlySubNigSpots.csv"), header = T, row.names = 1)
+
+```
+
+<!-- Volcano Plot -->
+```{r message=F, warning=F}
+
+mycolors <- c("red", "blue", "grey")
+names(mycolors) <- c("NegCor", "PosCor", "NO")
+
+p <- ggplot(data=cormsubnig, aes(x=rho, y=InvLog10FDR, col=sig, label=corlabel)) +
+  geom_point() +
+  geom_vline(xintercept=c(-0.3, 0.3), col="black") +
+  geom_hline(yintercept=-log10(0.01), col="black") +
+  scale_color_manual(values=mycolors)+
+  geom_text_repel(show.legend = F, max.overlaps = 50) +
+  scale_x_reverse()+
+  theme_minimal()
+
+fnm <- paste0(plots.dir, "/Fig2Dii.pdf")
+pdf(fnm, width = 8, height = 5)
+print(p)
+dev.off()
+p 
+
+```
+
+
+## *Fig2C: human Striatum*
+To demonstrate the relevance of the presented multimodal approach in human specimens, we applied it to a frozen human PD post-mortem striatal brain sample and measured neurotransmitters and gene expression over a 2.4 x 0.5 cm tissue section (Fig. 2Ci). To address and overcome RNA degradation in post-mortem material, we applied a recent protocol specifically developed for gene expression measurements from fresh frozen tissue samples with low/moderate RNA quality20. The spatial MSI distribution of DA and 3-MT (Fig. 2Cii, Suppl. Figs. 8,9) confirmed our previous findings8 in that these neurotransmitters were observed at higher levels in the medial division of the ventral caudate nucleus. Multimodal correlation analysis identified SCG2 as the transcript which was most correlated with dopamine abundance (Fig. 2Civ, Fig. 2Diii). We performed cell-type deconvolution analysis using publicly available snRNAseq data from the caudate nucleus of human post-mortem samples21, which contains six clusters of MSN neurons (MSN.D1a-c, MSN.D2a-c). Interestingly, similar to our observation in the PD model, MSN.D1b neurons were enriched in the dopamine-expressing region, with a spatial pattern similar to SCG2 (Fig. 2Cv).
+
+## *Suppl.Fig.8-9*
+N.B. The ion images presented in this figure were produced with MSI data analysis programs. We cannot reproduce these images using the current script.
+
+### Dopamine
+
+```{r message=F, warning=F}
+
+msi102F <- readRDS(paste0(project.dir, "/R_objects/V11T17-102_msi_F"))
+
+```
+
+```{r message=FALSE, warning=FALSE, fig.width=3*1, fig.height=3*4}
+
+images <- c("image", "image_102B1", "image_102C1", "image_102D1")
+
+p1 <- SpatialFeaturePlot(msi102F, features = "X674.2805", images = images[1], pt.size.factor = 4, ncol = 1,  min.cutoff = 5, max.cutoff = 6)+
+  scale_fill_viridis_c()+
+  scale_y_reverse() +
+  ggtitle("")
+p2 <- SpatialFeaturePlot(msi102F, features = "X674.2805", images = images[2], pt.size.factor = 4, ncol = 1,  min.cutoff = 5, max.cutoff = 6)+
+  scale_fill_viridis_c()+
+  scale_y_reverse() +
+  ggtitle("")
+p3 <- SpatialFeaturePlot(msi102F, features = "X674.2805", images = images[3], pt.size.factor = 4, ncol = 1, min.cutoff = 5, max.cutoff = 6)+
+  scale_fill_viridis_c()+
+  scale_y_reverse() +
+  ggtitle("")
+p4 <- SpatialFeaturePlot(msi102F, features = "X674.2805", images = images[4], pt.size.factor = 4, ncol = 1,  min.cutoff = 5, max.cutoff = 6)+
+  scale_fill_viridis_c()+
+  scale_y_reverse() +
+  ggtitle("")
+
+pa <- p1/p2/p3/p4
+
+fnm <- paste0(plots.dir,"/Fig2Cii.pdf")
+pdf(fnm, width = 4, height = 16)
+print(pa)
+dev.off()
+pa
+
+```
+
+### H&E
+```{r message=F, warning=F}
+
+se <- readRDS(file = paste0(project.dir, "/R_objects/hPDStr.10xFFBM.STUnF.An"))
+
+```
+
+```{r message=F, warning=F}
+
+fnm <- paste0(plots.dir,"/Fig2Ciii.jpg")
+jpeg(fnm, width = 300, height = 1200)
+ImagePlot(se, annotate = FALSE, type = "masked", indices = 1:4, method = "raster", ncols = 1)
+dev.off()
+ImagePlot(se, annotate = FALSE, type = "masked", indices = 1:4, method = "raster", ncols = 1)
+
+```
+N.B. The masking result for capture area C1 is not optimal, but for the purpose of illustrating the results it's reasonably good so we will leave it this way.
+
+### SCG2
+```{r message=F, warning=F}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+Idents(se) <- se$RegionLoupe
+cdspots <- WhichCells(se, idents = "Cd")
+
+p <- FeatureOverlay(se, 
+               sampleids = 1:3,
+           features = "SCG2",
+           ncol = 1,
+           spots = cdspots,
+           pt.size = 0.5, 
+           pt.border = F,
+           cols = blue,
+           center.zero = F, 
+           value.scale =  "all",
+           show.sb = T
+            )
+
+fnm <- paste0(plots.dir, "/Fig2Civ.pdf")
+# Export plot as pdf
+pdf(fnm, width = 2*1, height = 2*3)
+p
+dev.off()
+p
+
+```
+
+### Cell types
+MSN.D1_B
+```{r message=F, warning=F}
+
+blue <- c("lightgray", "cadetblue", "darkblue", "black")
+
+p <- FeatureOverlay(se, 
+               sampleids = 1:3,
+           features = "MSN.D1.TacPosB_6",
+           ncol = 1,
+           spots = cdspots,
+           pt.size = 0.6, 
+           pt.border = F,
+           cols = blue,
+           center.zero = F, 
+           value.scale =  "samplewise",
+           show.sb = TRUE
+            )
+
+fnm <- paste0(plots.dir, "/Fig2Cv.pdf")
+# Export plot as pdf
+pdf(fnm, width = 2*1, height = 2*3)
+p
+dev.off()
+p
+
+```
+
+### Dopamine-Genes correlation
+<!-- Upload results -->
+```{r message=F, warning=F}
+
+corHstr <- read.csv(file = paste0(tables.dir, "/corHstr_onlyCdSpots.csv"), header = T, row.names = 1)
+
+```
+
+<!-- Volcano Plot -->
+```{r message=F, warning=F}
+
+mycolors <- c("red", "blue", "grey")
+names(mycolors) <- c("NegCor", "PosCor", "NO")
+
+p <- ggplot(data=corHstr, aes(x=rho, y=InvLog10FDR, col=sig, label=corlabel)) +
+  geom_point() +
+  geom_vline(xintercept=c(-0.2, 0.2), col="black") +
+  geom_hline(yintercept=-log10(0.01), col="black") +
+  scale_color_manual(values=mycolors)+
+  geom_text_repel(show.legend = F, max.overlaps = 50, box.padding = 0.5) +
+  scale_x_reverse()+
+  theme_minimal()
+
+fnm <- paste0(plots.dir, "/Fig2Diii.pdf")
+pdf(fnm, width = 8, height = 5)
+print(p)
+dev.off()
+p
+
+```
+
+
+
+In summary, we present a method for simultaneous spatial profiling of small molecules and gene expression within a tissue section, facilitating the precise mapping of neurotransmitters in a cellular neighborhood. This approach has relevance for the investigation of neurological diseases like PD, but the impact could be even broader in oncology. Indeed, the spatial multimodal characterization of small molecule drugs with overlapping histology and spatial gene expression information can provide new mechanistic insights into the dynamic crosstalk that regulates the tumor microenvironment11 and drives the response to treatment13. Gene expression can efficiently inform about cell type composition, but also infer genome integrity12, which is of pivotal interest to match tumor clones with drug efficacy. Our study builds further on the notion of the importance of studying small molecules in a tissue context providing a new level of multimodality. 
+
+
