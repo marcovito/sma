@@ -29,15 +29,20 @@ https://figshare.scilifelab.se/articles/dataset/Spatial_Multimodal_Analysis_SMA_
 
 The code contained in this repo is set-up to work with the Mendeley dataset. You can download it clicking on the **Download All 5867 MB** button present on the website. If you do it this way then move the zip file to the `sma` folder and unpack this file and all the zip files inside of it by double-clicking on them. This will create a folder named `Spatial Multimodal Analysis of Transcriptomes and Metabolomes in Tissues` containing all the data. Rename this folder `data`.
 
-You can also do it using the command line. However this downloads a zip file that for some reason is detected by the unzip command as a zip bomb. However the zip file is just fine. You just need to export the variable xx and then it gets correctly unzipped. Run the following commands to download and unzip, rename the repo and unzip all the files it contains:
+You can also do it using the command line. However this downloads a zip file that for some reason is detected by the unzip command as a zip bomb. However the zip file is just fine. 
+You just need to export the variable xx and then it gets correctly unzipped. Run the following commands to download and unzip, rename the repo and unzip all the files it contains:
 
 ```
 wget https://prod-dcd-datasets-cache-zipfiles.s3.eu-west-1.amazonaws.com/w7nw4km7xd-1.zip
-export UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE
 unzip w7nw4km7xd-1.zip 
 mv Spatial\ Multimodal\ Analysis\ of\ Transcriptomes\ and\ Metabolomes\ in\ Tissues/ data
 cd data/
 unzip \*.zip
+```
+
+Doing it from the command line it might happen that the unzip command gives you an error saying that this file might be a zip bomb. However the zip file is just fine. Just run the following command and then try again with the commands listed in the previous block (from `unzip w7nw4km7xd-1.zip ` on)
+```
+export UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE
 ```
 
 ### 3. Install packages
