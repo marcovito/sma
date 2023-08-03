@@ -34,7 +34,7 @@ library(corrplot)
 <!-- Load project variables -->
 ```{r message=FALSE, warning=FALSE}
 
-project.dir <- "/home/marco.vicari/projects/sma_final_sub_230729/sma"
+project.dir <- ".."
 data.dir <- paste0(project.dir, "/data")
 dir.create(paste0(project.dir, "/results"))
 dir.create(paste0(project.dir, "/results/plots"))
