@@ -36,7 +36,7 @@ draw_graph <- function(layout, graph, lwd = 0.2, col = "grey") {
     segments(x0 = layout[graph@i + 1, 1], x1 = layout[res, 1], y0 = layout[graph@i +
         1, 2], y1 = layout[res, 2], lwd = lwd, col = col)
 }
-setwd("/home/marco.vicari/projects/test")
+
 ```
 
 # Load data and metadata
@@ -44,24 +44,24 @@ setwd("/home/marco.vicari/projects/test")
 ```{r}
 
 # LOAD DATA LIST
-project.dir <- "/home/marco.vicari/projects/sma_final_sub_230729/sma" #change this and the following paths depending on where you placed the data folder
+project.dir <- ".." #change this and the following paths depending on where you placed the data folder
 data.dir <- paste0(project.dir, "/data")
+plots.dir <- paste0(project.dir, "/results/plots")
+tables.dir <- paste0(project.dir, "/results/tables")
+
 data <- readRDS(paste0(data.dir, "/misc/se.multi.list"))
 names(data) <- unlist(lapply(data, function(x){ unique(x$sample_id) }))
 
 # GROUP SLIDES BY TECHNOLOGY
 analysis_list <- list(
-  DHB = c("V11L12-038_A1","V11L12-038_B1"),
-  m9AA = c("V11L12-038_D1"),
   FMP10_Striatum = c("V11L12-109_A1","V11L12-109_B1","V11L12-109_C1"),
   FMP10_SubNigra = c("V11T16-085_A1","V11T16-085_B1","V11T16-085_C1")
-  # FMP10_Human = c("V11T17-102_A1","V11T17-102_B1","V11T17-102_C1","V11T17-102_D1")
 )
 
 # EXTRACT METADADTA MATRIX FROM OBJECT
 metadata <- lapply(data, function(x){x@meta.data})
 metadata <- do.call(rbind, metadata)
-saveRDS(metadata, "metadata_all.rds")
+saveRDS(metadata, paste0(project.dir, "/R_objects/metadata_all.rds"))
 
 ```
 
@@ -72,10 +72,10 @@ saveRDS(metadata, "metadata_all.rds")
 ```{r}
 
 # CREATE NEW OPTPUT EXCEL FILES/WORKBOOKS
-if(file.exists("peak_associated_genes.xlsx")){ file.remove("peak_associated_genes.xlsx")}
-if(file.exists("peak_modules.xlsx")){ file.remove("peak_modules.xlsx")}
-wb3 <- openxlsx::createWorkbook("peak_associated_genes.xlsx")
-wb4 <- openxlsx::createWorkbook("peak_modules.xlsx")
+if(file.exists(paste0(tables.dir, "/peak_associated_genes.xlsx"))){ file.remove(paste0(tables.dir, "/peak_associated_genes.xlsx"))}
+if(file.exists(paste0(tables.dir, "/peak_modules.xlsx"))){ file.remove(paste0(tables.dir, "/peak_modules.xlsx"))}
+wb3 <- openxlsx::createWorkbook(paste0(tables.dir, "/peak_associated_genes.xlsx"))
+wb4 <- openxlsx::createWorkbook(paste0(tables.dir, "/peak_modules.xlsx"))
 
 
 # FOR EACH MSI MATRIX, DO:
@@ -107,7 +107,7 @@ for(i in names(analysis_list)){
   # COMPUTE JOINT PCA EMBEDDINGS
   joint_PC <- irlba::irlba( (Matrix::rbind2(RNA_data,MSI_data)) , nv = 20 , center = TRUE, scale. = TRUE)
   rownames(joint_PC$u) <- c(rownames(RNA_data),rownames(MSI_data))
-  saveRDS(joint_PC, paste0(i,"_joint_PCA_ST_MSI.rds"))
+  saveRDS(joint_PC, paste0(project.dir,"/R_objects/",i,"_joint_PCA_ST_MSI.rds"))
   
   # COMPUTE SEARCH TREE FROM ST AND MSI
   ann_ST <- RcppHNSW::hnsw_build( joint_PC$u[rownames(RNA_data),] , distance = "cosine")
@@ -135,12 +135,12 @@ for(i in names(analysis_list)){
   nn <- drop0(round(nn,2))
   
   # SAVE INTEGRATED GRAPH AND MATRIX
-  saveRDS(knn, paste0(i,"_MSI_ST_joint_knn.rds"))
+  saveRDS(knn, paste0(project.dir,"/R_objects/",i,"_MSI_ST_joint_knn.rds"))
 }
 
 
-openxlsx::saveWorkbook(wb3, "peak_associated_genes.xlsx", overwrite = TRUE)
-openxlsx::saveWorkbook(wb4, "peak_modules.xlsx", overwrite = TRUE)
+openxlsx::saveWorkbook(wb3, paste0(tables.dir, "/peak_associated_genes.xlsx"), overwrite = TRUE)
+openxlsx::saveWorkbook(wb4, paste0(tables.dir, "/peak_modules.xlsx"), overwrite = TRUE)
 ```
 
 
@@ -150,14 +150,14 @@ openxlsx::saveWorkbook(wb4, "peak_modules.xlsx", overwrite = TRUE)
 ```{r}
 
 # CREATE NEW OPTPUT EXCEL FILES/WORKBOOKS
-if(file.exists("Joint_SRT_MSI_spinglass_modules.xlsx")){ file.remove("Joint_SRT_MSI_spinglass_modules.xlsx")}
-wb <- openxlsx::createWorkbook("Joint_SRT_MSI_spinglass_modules.xlsx")
+if(file.exists(paste0(tables.dir, "/Joint_SRT_MSI_spinglass_modules.xlsx"))){ file.remove(paste0(tables.dir, "/Joint_SRT_MSI_spinglass_modules.xlsx"))}
+wb <- openxlsx::createWorkbook(paste0(tables.dir, "/Joint_SRT_MSI_spinglass_modules.xlsx"))
 
 # FOR EACH MSI MATRIX, DO:
 for(i in names(analysis_list)){
   
   # LOAD THE JOINT GRAPHDS
-  knn <- readRDS( paste0(i,"_MSI_ST_joint_knn.rds"))
+  knn <- readRDS( paste0(project.dir,"/R_objects/",i,"_MSI_ST_joint_knn.rds"))
   knn$dist[knn$dist >= 1] <- 0.99
 
   
@@ -209,12 +209,12 @@ for(i in names(analysis_list)){
     x = cbind(
       feature           = cl3$names, 
       spinglass_module = cl3$membership)[o,] , 
-    file = paste0(i,"spinglass_modules.csv"),row.names = T)
+    file = paste0(tables.dir,"/",i,"spinglass_modules.csv"),row.names = T)
   
   
   # PLOT JOINT GRAPH
   message("   > plotting graph")
-  pdf(paste0(i,"_ST_MSI_KNN_layout.pdf"), width=23, heigh=10, useDingbats = F)
+  pdf(paste0(plots.dir,"/",i,"_ST_MSI_KNN_layout.pdf"), width=23, heigh=10, useDingbats = F)
     # (PER OMICS)
     layout(matrix(c(1,2),ncol = 2,byrow = T ))
     par(mar=c(2.5,2.5,2,8))
@@ -256,7 +256,7 @@ for(i in names(analysis_list)){
 
 }
  
-openxlsx::saveWorkbook(wb, "Joint_SRT_MSI_spinglass_modules.xlsx", overwrite = TRUE)
+openxlsx::saveWorkbook(wb, paste0(tables.dir,"/","Joint_SRT_MSI_spinglass_modules.xlsx"), overwrite = TRUE)
 ```
 
 
@@ -267,13 +267,13 @@ openxlsx::saveWorkbook(wb, "Joint_SRT_MSI_spinglass_modules.xlsx", overwrite = T
 ```{r}
 
 # CREATE NEW OPTPUT EXCEL FILES/WORKBOOKS
-if(file.exists("peak_associated_genes.xlsx")){ file.remove("peak_associated_genes.xlsx")}
-if(file.exists("peak_modules.xlsx")){ file.remove("peak_modules.xlsx")}
-wb3 <- openxlsx::createWorkbook("peak_associated_genes.xlsx")
-wb4 <- openxlsx::createWorkbook("peak_modules.xlsx")
+if(file.exists(paste0(tables.dir,"/peak_associated_genes.xlsx"))){ file.remove(paste0(tables.dir,"/peak_associated_genes.xlsx"))}
+if(file.exists(paste0(project.dir,"/peak_modules.xlsx"))){ file.remove(paste0(project.dir,"/peak_modules.xlsx"))}
+wb3 <- openxlsx::createWorkbook(paste0(tables.dir,"/peak_associated_genes.xlsx"))
+wb4 <- openxlsx::createWorkbook(paste0(project.dir,"/peak_modules.xlsx"))
 
 
-pdf(paste0("MSI_peack_graph.pdf"),width = 20,height = 5,useDingbats = F)
+pdf(paste0(plots.dir,"/MSI_peack_graph.pdf"),width = 20,height = 5,useDingbats = F)
 
 # FOR EACH MSI MATRIX, DO:
 for(i in names(analysis_list) ){
@@ -300,7 +300,7 @@ for(i in names(analysis_list) ){
   # COMPUTE JOINT PCA EMBEDDINGS
   joint_PC <- irlba::irlba( Matrix::rbind2(RNA_data,MSI_data) , nv = 20 )
   rownames(joint_PC$u) <- c(rownames(RNA_data),rownames(MSI_data))
-  saveRDS(joint_PC, paste0(i,"_joint_PCA_ST_MSI.rds"))
+  saveRDS(joint_PC, paste0(project.dir,"/R_objects/",i,"_joint_PCA_ST_MSI.rds"))
   
   # COMPUTE SEARCH TREE FROM ST AND MSI
   ann_ST <- RcppHNSW::hnsw_build( joint_PC$u[rownames(RNA_data),] , distance = "cosine")
@@ -326,9 +326,9 @@ for(i in names(analysis_list) ){
   colnames(l) <- c("dim1","dim2")
 
   # SAVE JOINT GRAPH
-  saveRDS(knn, paste0(i,"_MSI_MSI_joint_knn.rds"))
-  saveRDS(nn, paste0(i,"_MSI_MSI_joint_knn_matrix.rds"))
-  saveRDS(g, paste0(i,"_MSI_MSI_joint_knn_igraph.rds"))
+  saveRDS(knn, paste0(project.dir,"/R_objects/",i,"_MSI_MSI_joint_knn.rds"))
+  saveRDS(nn, paste0(project.dir,"/R_objects/",i,"_MSI_MSI_joint_knn_matrix.rds"))
+  saveRDS(g, paste0(project.dir,"/R_objects/",i,"_MSI_MSI_joint_knn_igraph.rds"))
 
   
   # DEFINE METADATA FOR THE FEATURES (GENES VS MSI-PEAKS)
@@ -355,7 +355,7 @@ for(i in names(analysis_list) ){
   
   # FIND THE CLOSEST GENES TO EACH METABOLITE
   knn2 <- RcppHNSW::hnsw_search( joint_PC$u[rownames(MSI_data),] , k = 10 , ann = ann_ST)
-  knn3 <- matrix(rownames(ST2_use)[c(knn2$idx) ],ncol = 10,byrow = F,dimnames = list(rownames(MSI_data)))
+  knn3 <- matrix(rownames(data_use)[c(knn2$idx) ],ncol = 10,byrow = F,dimnames = list(rownames(MSI_data)))
   knn3 <- cbind(knn3,knn2$dist)
   knn3 <- knn3[order( as.numeric(rownames(knn3)) ),]
   colnames(knn3) <- c(paste0("GeneRank",1:10),paste0("weight_GeneRank",1:10))
@@ -374,14 +374,15 @@ for(i in names(analysis_list) ){
   nna <- drop0(round(nn,2))
   
   # SAVE INTEGRATED GRAPH AND MATRIX
-  saveRDS(knn2, paste0(i,"_MSI_ST_joint_knn.rds"))
-  saveRDS(nn, paste0(i,"_MSI_ST_joint_knn_matrix.rds"))
+  saveRDS(knn2, paste0(project.dir,"/R_objects/",i,"_MSI_ST_joint_knn.rds"))
+  saveRDS(nn, paste0(project.dir,"/R_objects/",i,"_MSI_ST_joint_knn_matrix.rds"))
   
 }
 dev.off()
 
-openxlsx::saveWorkbook(wb3, "peak_associated_genes.xlsx", overwrite = TRUE)
-openxlsx::saveWorkbook(wb4, "peak_modules.xlsx", overwrite = TRUE)
+openxlsx::saveWorkbook(wb3, paste0(tables.dir,"/peak_associated_genes.xlsx"), overwrite = TRUE)
+openxlsx::saveWorkbook(wb4, paste0(tables.dir,"/peak_modules.xlsx"), overwrite = TRUE)
+
 ```
 
 
