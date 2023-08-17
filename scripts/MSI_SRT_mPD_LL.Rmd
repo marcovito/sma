@@ -23,7 +23,12 @@ library(dbscan)
 Assemble spaceranger output files and MSI output files
 
 # Create directories and system variables
-These directories should have already been created if you already ran the main.Rmd script. Run the following chunk of code in case you didn't. Modify the project.dir and working.dir paths depending on the folder where you are located when running this script. You can check the location where you are using running getwd() directly in the console and modify it using setwd() function. When writing this script we are working in the /sma/scripts folder (our working.dir), and we counsidered sma our project.dir.
+These directories should have already been created if you already ran the main.Rmd script. Run the following chunk of 
+code in case you didn't. Modify the project.dir and working.dir paths depending on the folder where you are located 
+when running this script. You can check the location where you are using running getwd() directly in the console and 
+modify it using setwd() function. When writing this script we are working in the /sma/scripts folder (our working.dir), 
+and we counsidered sma our project.dir.
+
 ```{r message=FALSE, warning=FALSE}
 
 project.dir <- ".."
@@ -235,7 +240,8 @@ patchwork::wrap_plots(p1, p2, ncol = 1) &
 ## Create Seurat objects for MSI data
 ***
 
-Now we can create a `Staffli` object and a `Seurat` object for each dataset to and combine the two to make a `Seurat` object compatible with STUtility. 
+Now we can create a `Staffli` object and a `Seurat` object for each dataset to and combine the two to make a 
+`Seurat` object compatible with STUtility. 
 
 ```{r}
 
@@ -255,7 +261,8 @@ se.MSI.list <- setNames(lapply(names(se.RNA.list), function(nm) {
 
 ```
 
-It looks like the MSI section has some data outside of the tissue. We will get rid of it using a strategy that involves looking at the first components of the PCA.
+It looks like the MSI section has some data outside of the tissue. We will get rid of it using a strategy that 
+involves looking at the first components of the PCA.
 
 ```{r fig.width=10, fig.height=5}
 
@@ -312,7 +319,7 @@ patchwork::wrap_plots(plots, ncol = 3)
 
 ```
 
-Based on these selected components, I think we can filter our MSI dataset 
+Based on these selected components, we can filter our MSI dataset 
 further to get a better outline of the tissue. 
 
 All thresholds were selected by visual inspection of the spatial plots above. 
@@ -344,7 +351,7 @@ ggplot(gg, aes(sample_id, value, color = tissue)) +
 
 ```
 
-And let's look at the labels in in 2D space:
+And let's look at the labels in 2D space:
 
 ```{r  fig.width=12, fig.height=12}
 
@@ -377,7 +384,7 @@ patchwork::wrap_plots(plots, ncol = 3)
 ***
 
 Looks like our filters captured the edges quite well so now we can remove 
-the background from our Seurat objects.
+the background from our `Seurat` objects.
 
 ```{r}
 
@@ -442,7 +449,7 @@ patchwork::wrap_plots(plots, ncol = 3)
 ```
 
 Now if we move to the MSI data instead, we need to add a few things to the
-object to make it work in STUtility. 
+object to make it work in `STUtility`. 
 
 ```{r eval=FALSE}
 
@@ -526,9 +533,7 @@ se.merged.list <- lapply(names(se.MSI.withIMG.list), function(nm) {
 
 ```
 
-Let's check how that went :-/
-
-Looks like the two coordinate systems are fairly close to each other now.
+The two coordinate systems are fairly close to each other now.
 
 ```{r include=FALSE}
 se.merged.list <- readRDS("../R_objects/se.merged.list")
@@ -552,7 +557,7 @@ patchwork::wrap_plots(plots, ncol = 2)
 ### Manual alignment
 ***
 
-With this we should be able to run `ManualAlignImages`. Here we need to 
+With this we should be able to run `ManualAlignImages`. Here, we need to 
 adjust the MSI section so that it fits with the RNA data section. This 
 will be the most time consuming step of this notebook.
 
@@ -581,7 +586,7 @@ transforms
 
 ```
 
-Run the alignment function ofn each dataset.
+Run the alignment function for each dataset.
 
 ```{r eval=FALSE}
 
@@ -600,7 +605,7 @@ se.merged.list[[12]] <- ManualAlignImages(se.merged.list[[12]])
 
 ```
 
-The alignment seems to have gone pretty well :-)
+Baed on the plots below, the alignment appears to be quite decent.
 
 ```{r fig.width=10, fig.height=10}
 
@@ -621,8 +626,8 @@ patchwork::wrap_plots(plots, ncol = 3)
 Now that the images are aligned, we still have one last step left to put 
 the MSI and Visium coordinates in the same "space".
 
-From now on, we'll have the coordinates stored as a data.frame instead of 
-using the Seurat objects. Below, we calculate a scaling factor to adjust 
+From now on, we'll have the coordinates stored as a `data.frame` instead of 
+using the `Seurat` objects. Below, we calculate a scaling factor to adjust 
 the MSI coordinates to fit into the same coordinate system as the RNA data. 
 
 ```{r fig.width=12, fig.height=14}
@@ -664,15 +669,13 @@ dev.off()
 ## data integration
 ***
 
-Now we just need to come up with a way of "integrating" the data. 
-I can think of two simple strategies:
+Now we need a strategy to pair data points across the two modalities. 
 
-  1. For the MSI data pixels, assign at least 1 nearest neighbor from 
-  the RNA data spots and obtain the average expression for each gene
-  2. For the MSI data pixels, assign up to k nearest neighbors from the 
-  RNA data spots and obtain the average expression for each gene
+The strategy used downstream works as follows: For the MSI data pixels, assign at least 1 nearest neighbor 
+from the RNA data spots and obtain the average expression for each gene
 
-We also need to apply some kind of distance threshold to remove spots that are too far from a neighbor in the other data set.
+We also need to apply some kind of distance threshold to remove spots that are too far from a neighbor in 
+the other data set.
 
 First, let's calculate the pairwise distances between the two data sets:
 
@@ -755,7 +758,7 @@ for (i in seq_along(plots)) {
 
 If we look at the distance histogram, it should be relatively easy 
 to spot what data points are located too far away from each other. 
-Somewhere around 35 looks like a reasonable cutoff based on the 
+A value of 35 looks like a reasonable cutoff based on the 
 distance histogram below. 
 
 ```{r}
@@ -815,10 +818,10 @@ for (i in seq_along(plots)) {
 
 ```
 
-First we can filter the data to keep only 1 RNA data neighbor per MSI data 
-point. This will lead to some loss of data, but is a quite conservative approach.
+First we filter the data to keep only 1 RNA data neighbor per MSI data 
+point. This will lead to some loss of data, and is therefore a quite conservative approach.
 An alternative would be to average the data between nearest neighbors, thus
-interpolating between data points.
+interpolating values between data points.
 
 ```{r}
 
@@ -842,10 +845,9 @@ knn_spatial_df_filtered_list <- setNames(lapply(names(knn_spatial_df_filtered_li
 
 ```
 
-Now we can see that every data point in the MSI data has a match in the RNA data. 
+Now, we can see that every data point in the MSI data has a match in the RNA data. 
 However, with this current approach you can see that the regular pattern of the two
-data types lead to a loss of data in in certain parts of the tissue. Interpolation
-between data points could be used to avoid this.
+data types lead to a loss of data in certain parts of the tissue. 
 
 ```{r fig.width=12, fig.height=30}
 
@@ -877,7 +879,7 @@ for (i in seq_along(plots)) {
 
 ```
 
-### Wrapping up alignment process
+### Wrapping up the alignment process
 ***
 
 Now that we have our aligned RNA and MSI coordinates, let's export these
@@ -896,7 +898,7 @@ for (nm in names(knn_spatial_df_filtered_list)) {
 
 Now we can create a new `Seurat` object where we can analyze 
 the two modalities jointly. Here we will simply add the MSI 
-data to our RNA Seurat object.
+data to our RNA `Seurat` object.
 
 ```{r include=FALSE}
 
@@ -904,7 +906,7 @@ se.multi.list <- readRDS("../R_objects/se.multi.list")
 
 ```
 
-Create a new Seurat object which holds both data modalities.
+Create a new `Seurat` object which holds both data modalities.
 
 ```{r eval=FALSE}
 
@@ -946,6 +948,15 @@ ST.FeaturePlot(se.multi, features = c("nFeature_RNA", "nFeature_MSI"))
 NOTE: I selected "CLR" normalization for the MSI data, but another 
 normalization method might be more appropriate.
 
+Below, we apply a basic workflow to normalize and analyze the RNA and MSI data sets. The strategy is outlined below:
+
+1. Normalization ("logNormalize" RNA counts, "CLR" for "MSI" values)
+2. Find top variable features
+3. Run Principal Component Analysis for dimensionality reduction
+4. Embed data with UMAP using the PCA results as input (first 30 components for the RNA data and first 10 components for the MSI data)
+5. Create an SNN graph from the PCA results (first 30 components for the RNA data and first 10 components for the MSI data)
+6. Run data-.driven clustering using default parameters
+
 ```{r eval=FALSE}
 
 se.multi.list <- lapply(names(se.multi.list), function(nm) {
@@ -969,7 +980,7 @@ se.multi.list <- lapply(names(se.multi.list), function(nm) {
   se.multi <- NormalizeData(se.multi, normalization.method = "CLR", verbose = FALSE) |> 
     FindVariableFeatures(nfeatures = 200, verbose = FALSE) |> 
     ScaleData(verbose = FALSE) |> 
-    RunPCA(reduction.name = "msipca", dims = 1:10, verbose = FALSE) |>
+    RunPCA(reduction.name = "msipca", verbose = FALSE) |>
     RunUMAP(reduction = "msipca", dims = 1:10, reduction.name = "MSI.umap", verbose = FALSE) |>
     FindNeighbors(reduction = "msipca", dims = 1:10, verbose = FALSE) |>
     FindClusters(verbose = FALSE)
@@ -981,7 +992,7 @@ se.multi.list <- lapply(names(se.multi.list), function(nm) {
 ```
 
 We can look at the UMAPs defined by either RNA or MSI data. It is clear that the RNA
-data is more complex it is still possible to find clustered data points in the
+data is more complex although it is still possible to find clustered data points in the
 MSI data as well.
 
 ```{r fig.width=8, fig.height=30}
@@ -1043,7 +1054,7 @@ se.multi.list <- lapply(se.multi.list, function(se.multi) {
 
 ```
 
-Now we can sort the clusters by decreasing RNA weight.
+Now we can also sort the clusters by decreasing RNA weight.
 
 ```{r}
 
