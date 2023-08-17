@@ -574,13 +574,13 @@ Here are the settings I used:
 
 transforms <- data.frame(
   sample_id = names(se.MSI.withIMG.list),
-  rotation_angle = c(89.6, 91.2, 89.3, 89.1, 89.8, 89.1, 89.5, 89.8, 89.2, 89.4, 89, 89.6),
-  move_along_x_axis = c(151, 163, 147, 161, 152, 215, 108, 1, 52, 186, 106, 66),
-  move_along_y_axis = c(-175, -165, -139, -193, -100, -126, -96, -125, 6, -46, -154, -7),
-  blue_axis_angle = c(50.8, 48.7, -49.2, 55.3, 55.3, 54.6, 53.4, 50, 48.7, 55.8, 52.3, 55.3),
-  blue_axis_stretch = c(1.13, 1.12, 1.19, 1.18, 1.17, 1.17, 1.15, 1.17, 1.18, 1.18, 1.19, 1.19),
-  red_axis_angle = c(49, 48.7, -49.3, -52.3, 55.2, 54.6, 53.4, 46.5, 45.6, 54.4, 42.3, 53.8),
-  red_axis_stretch = c(1.19, 1.19, 1.2, 1.2, 1.22, 1.21, 1.19, 1.17, 1.19, 1.19, 1.2, 1.19)
+  rotation_angle = c(89.6, 91.2, 89.3, 89.1, 89.8, 89.1, 89.5, 89.8, 89.2),
+  move_along_x_axis = c(151, 163, 147, 161, 152, 215, 108, 1, 52),
+  move_along_y_axis = c(-175, -165, -139, -193, -100, -126, -96, -125, 6),
+  blue_axis_angle = c(50.8, 48.7, -49.2, 55.3, 55.3, 54.6, 53.4, 50, 48.7),
+  blue_axis_stretch = c(1.13, 1.12, 1.19, 1.18, 1.17, 1.17, 1.15, 1.17, 1.18),
+  red_axis_angle = c(49, 48.7, -49.3, -52.3, 55.2, 54.6, 53.4, 46.5, 45.6),
+  red_axis_stretch = c(1.19, 1.19, 1.2, 1.2, 1.22, 1.21, 1.19, 1.17, 1.19)
 )
 transforms
 
@@ -599,9 +599,6 @@ se.merged.list[[6]] <- ManualAlignImages(se.merged.list[[6]])
 se.merged.list[[7]] <- ManualAlignImages(se.merged.list[[7]])
 se.merged.list[[8]] <- ManualAlignImages(se.merged.list[[8]])
 se.merged.list[[9]] <- ManualAlignImages(se.merged.list[[9]])
-se.merged.list[[10]] <- ManualAlignImages(se.merged.list[[10]])
-se.merged.list[[11]] <- ManualAlignImages(se.merged.list[[11]])
-se.merged.list[[12]] <- ManualAlignImages(se.merged.list[[12]])
 
 ```
 
